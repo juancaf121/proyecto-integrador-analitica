@@ -1,0 +1,11 @@
+﻿modelo,variante,variables_count,n_pca,var_exp_pca,roc_auc,pr_auc,accuracy,precision,recall,f1,tn,fp,fn,tp
+Regresión logística equilibrada,Original (con patología y región),13,11,80.28,0.9527,0.5732,0.8837,0.4681,0.9162,0.6197,4462,609,49,536
+Regresión logística equilibrada,Reducido (sin patología ni región),11,6,80.08,0.6171,0.1371,0.4019,0.1271,0.8154,0.22,1796,3275,108,477
+Regresión logística sin balanceo,Original (con patología y región),13,11,80.28,0.951,0.691,0.9457,0.738,0.7368,0.7374,4918,153,154,431
+Regresión logística sin balanceo,Reducido (sin patología ni región),11,6,80.08,0.617,0.137,0.8966,0.0,0.0,0.0,5071,0,585,0
+Árbol de decisión,Original (con patología y región),13,11,80.28,0.9598,0.7181,0.8769,0.455,0.959,0.6172,4399,672,24,561
+Árbol de decisión,Reducido (sin patología ni región),11,6,80.08,0.6221,0.1382,0.398,0.1288,0.8359,0.2231,1762,3309,96,489
+Random Forest,Original (con patología y región),13,11,80.28,0.9789,0.7989,0.9362,0.6273,0.9436,0.7536,4743,328,33,552
+Random Forest,Reducido (sin patología ni región),11,6,80.08,0.6371,0.1521,0.494,0.138,0.7419,0.2327,2360,2711,151,434
+SVM RBF (submuestra),Original (con patología y región),13,11,80.6,0.9665,0.6752,0.9466,0.7001,0.8462,0.7663,4859,212,90,495
+SVM RBF (submuestra),Reducido (sin patología ni región),11,6,80.28,0.6229,0.1472,0.8966,0.0,0.0,0.0,5071,0,585,0

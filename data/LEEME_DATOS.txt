@@ -1,0 +1,4 @@
+DATOS DE DEMOSTRACION DEL PROYECTO
+El equipo responsable indica que los archivos CSV incluidos son muestras ficticias de uso académico.
+Se incluyen deliberadamente en esta versión para GitHub y Streamlit Community Cloud.
+No se verificó de manera independiente su procedencia: comprobar antes de publicar que no contienen registros hospitalarios reales o restringidos.

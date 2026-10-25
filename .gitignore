@@ -1,0 +1,25 @@
+# Entornos virtuales
+.venv/
+env/
+venv/
+ENV/
+
+# Archivos temporales de Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Respaldos y editores
+*.bak
+*.fase1.bak
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Los DOS CSV declarados por el equipo como muestras ficticias
+# se incluyen intencionalmente para ejecutar la aplicacion en Streamlit.
+# Otros archivos CSV dentro de data/ no se versionan sin revisar.
+data/*.csv
+!data/df_modelado.csv
+!data/df_segmentado_clusters.csv
