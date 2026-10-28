@@ -25,6 +25,7 @@ from sklearn.metrics import (
     r2_score, mean_absolute_error, mean_squared_error,
 )
 from modelo_cuaderno4 import ExtractorPCAKMeans
+from adaptador_datos import normalizar_datos, predictores_disponibles, calcular_segmentos, diagnostico_k, PREFIJOS
 
 st.set_page_config(
     page_title='Analítica vial | Proyecto integrador',
@@ -34,6 +35,8 @@ st.set_page_config(
 BASE = Path(__file__).parent
 RANDOM_STATE = 42
 
+# Se conservan las variables originales cuando están disponibles.
+# En CSV crudos/intermedios se usan únicamente los predictores observados.
 COLUMNAS_REG = [
     'edad', 'sexo', 'politraumatismo', 'referido_a_otra_ips',
     'tipo_de_vehiculo', 'relacion_usuario_accidente', 'ips',
@@ -41,7 +44,6 @@ COLUMNAS_REG = [
     'mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos',
 ]
 COLUMNAS_CLF = [c for c in COLUMNAS_REG if c != 'politraumatismo']
-NECESARIAS = set(COLUMNAS_REG) | {'costos', 'log_costos', 'politraumatismo'}
 
 
 # ── Funciones de carga con caché ───────────────────────────────────────────────
@@ -55,28 +57,50 @@ def cargar_clusters():
     return pd.read_csv(BASE / 'data' / 'df_segmentado_clusters.csv')
 
 
+@st.cache_data(show_spinner=False)
+def cargar_base_ejemplo(nombre):
+    rutas = {
+        'Modelado oficial (28.276)': 'df_modelado.csv',
+        'Base cruda original (34.306)': 'BBDDcruda_original.csv',
+        'Base limpia intermedia (18.058)': 'BBDDlimpia.csv',
+    }
+    return pd.read_csv(BASE / 'data' / rutas[nombre], low_memory=False)
+
+
+@st.cache_data(show_spinner=False)
+def calcular_segmentos_cache(data):
+    return calcular_segmentos(data)
+
+
+@st.cache_data(show_spinner=False)
+def diagnostico_k_cache(data):
+    return diagnostico_k(data)
+
+
 # ── Función de entrenamiento y evaluación ─────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def evaluar_modelo(data, objetivo, modelo, profundidad):
     """Reentrenamiento reproducible en la base suministrada.
     PCA/cluster nunca se leen de la exportación del Entregable 3.
     """
-    faltan = NECESARIAS.difference(data.columns)
-    if faltan:
-        raise ValueError(
-            'El archivo no incluye las columnas para modelado: '
-            + ', '.join(sorted(faltan))
-        )
+    pref = predictores_disponibles(data)
+    columnas_base = ['edad', 'sexo', 'referido_a_otra_ips'] + list(pref)
     original = data.copy()
-    original = original.dropna(subset=['costos', 'edad', 'politraumatismo'])
-    original = original[original['costos'].gt(0)].copy()
+    original['edad'] = pd.to_numeric(original['edad'], errors='coerce')
+    original = original.loc[original['edad'].notna() & original['politraumatismo'].isin(['si', 'no'])].copy()
+    if objetivo == 'Costos':
+        if 'costos' not in original.columns:
+            raise ValueError('Para regresión falta la columna costos.')
+        original['costos'] = pd.to_numeric(original['costos'], errors='coerce')
+        original = original.loc[original['costos'].gt(0)].copy()
+    if len(original) < 30:
+        raise ValueError('No hay suficientes registros válidos para entrenar este modelo.')
 
-    # Variable objetivo binaria — metodología del Entregable 4.
-    y_clf = original['politraumatismo'].astype(str).str.lower().eq('si').astype(int)
-    if y_clf.nunique() < 2:
-        raise ValueError(
-            'El dataset debe contener casos positivos y negativos para politraumatismo.'
-        )
+    # La clasificación no exige un costo válido: evita excluir automáticamente
+    # pacientes con costos nulos/cero si su respuesta binaria sí se conoce.
+    y_clf = original['politraumatismo'].eq('si').astype(int)
+    if y_clf.nunique() < 2 or y_clf.value_counts().min() < 2:
+        raise ValueError('Se requieren al menos dos casos de cada clase de politraumatismo.')
 
     # Separación estratificada 80/20, semilla fija.
     ix_train, ix_test = train_test_split(
@@ -89,9 +113,10 @@ def evaluar_modelo(data, objetivo, modelo, profundidad):
     # ── Regresión de costos ────────────────────────────────────────────────────
     if objetivo == 'Costos':
         y = np.log10(original['costos'].values)
-        datos = original[COLUMNAS_REG]
+        datos = original[columnas_base + ['politraumatismo']]
         configuracion = {
             'include_politrauma': True,
+            'pref_dict': pref,
             'var_threshold': None if modelo == 'PCA completo + lineal' else 0.80,
         }
         pipe = Pipeline([
@@ -113,11 +138,11 @@ def evaluar_modelo(data, objetivo, modelo, profundidad):
             'entrenamiento': len(ix_train), 'prueba': len(ix_test),
             'n_pc': pipe.named_steps['pre'].n_pcs_,
             'var_exp': pipe.named_steps['pre'].var_explicada_,
-            'muestreo_svm': False,
+            'muestreo_svm': False, 'variables_modelo': columnas_base + ['politraumatismo'],
         }
 
     # ── Clasificación de politraumatismo ──────────────────────────────────────
-    datos = original[COLUMNAS_CLF]
+    datos = original[columnas_base]
     y = y_clf.values
     subset_train = ix_train
 
@@ -153,7 +178,7 @@ def evaluar_modelo(data, objetivo, modelo, profundidad):
         raise ValueError('Modelo desconocido: ' + modelo)
 
     pipe = Pipeline([
-        ('pre', ExtractorPCAKMeans(include_politrauma=False, var_threshold=0.80)),
+        ('pre', ExtractorPCAKMeans(include_politrauma=False, var_threshold=0.80, pref_dict=pref)),
         ('modelo', estimator),
     ])
     pipe.fit(datos.iloc[subset_train], y[subset_train])
@@ -164,7 +189,7 @@ def evaluar_modelo(data, objetivo, modelo, profundidad):
         'entrenamiento': len(subset_train), 'prueba': len(ix_test),
         'n_pc': pipe.named_steps['pre'].n_pcs_,
         'var_exp': pipe.named_steps['pre'].var_explicada_,
-        'muestreo_svm': len(subset_train) != len(ix_train),
+        'muestreo_svm': len(subset_train) != len(ix_train), 'variables_modelo': columnas_base,
     }
 
 
@@ -176,54 +201,45 @@ menu = st.sidebar.radio('Navegación', [
     'Regresión de costos', 'Clasificación', 'Reproducibilidad',
 ])
 st.sidebar.divider()
-archivo = st.sidebar.file_uploader('Cargar otro CSV (opcional)', type=['csv'])
+base_activa = st.sidebar.selectbox('Base de datos incluida', [
+    'Modelado oficial (28.276)',
+    'Base cruda original (34.306)',
+    'Base limpia intermedia (18.058)',
+])
+archivo = st.sidebar.file_uploader('O cargar un CSV propio (prioritario)', type=['csv'])
 
-if archivo is not None:
-    try:
-        df = pd.read_csv(io.BytesIO(archivo.getvalue()))
-        if df.empty:
-            st.sidebar.error('El archivo CSV está vacío. Carga un archivo con datos.')
-            st.stop()
-        if len(df.columns) < 3:
-            st.sidebar.error(
-                'El archivo parece no tener la estructura correcta '
-                '(menos de 3 columnas detectadas). Verifica el delimitador o la codificación.'
-            )
-            st.stop()
+try:
+    if archivo is not None:
+        contenido = archivo.getvalue()
+        if not contenido:
+            raise ValueError('El archivo CSV está vacío.')
+        # Detecta los dos delimitadores habituales sin alterar los datos de origen.
+        linea = contenido.splitlines()[0].decode('utf-8-sig', errors='replace')
+        sep = ';' if linea.count(';') > linea.count(',') else ','
+        crudo = pd.read_csv(io.BytesIO(contenido), sep=sep, low_memory=False)
+        procedencia = archivo.name
         archivo_personalizado = True
-    except Exception as e:
-        st.sidebar.error(
-            f'No se pudo leer el CSV.\n'
-            f'Verifica que sea un archivo CSV válido con codificación UTF-8.\n'
-            f'Detalle: {e}'
-        )
-        st.stop()
-else:
-    try:
-        df = cargar_default()
-    except FileNotFoundError:
-        df = None  # Los CSV no se suben a GitHub por privacidad.
-    archivo_personalizado = False
-
-if df is None:
-    st.title('Cargar dataset para comenzar')
-    st.info(
-        'El dataset local no está disponible en este servidor. Usa el botón '
-        '**Cargar otro CSV** de la barra lateral para analizar un archivo '
-        'compatible. La versión local utiliza data/df_modelado.csv.'
-    )
-    st.warning(
-        'Los datos hospitalarios pueden ser sensibles. Antes de cargarlos a '
-        'un servicio en la nube, verifica que cuentas con autorización para ello. '
-        'No subas los microdatos a un repositorio público.'
-    )
+        firma_datos = hashlib.sha256(contenido).hexdigest()[:16]
+    else:
+        crudo = cargar_base_ejemplo(base_activa)
+        procedencia = base_activa
+        archivo_personalizado = base_activa != 'Modelado oficial (28.276)'
+        firma_datos = 'ejemplo_' + hashlib.sha256(base_activa.encode()).hexdigest()[:16]
+    if crudo.empty or len(crudo.columns) < 3:
+        raise ValueError('El CSV está vacío o no tiene suficientes columnas. Comprueba el delimitador.')
+    df, notas_esquema, esquema = normalizar_datos(crudo)
+except Exception as exc:
+    st.sidebar.error(f'No se pudo preparar el archivo: {exc}')
     st.stop()
 
-firma_datos = (
-    hashlib.sha256(archivo.getvalue()).hexdigest()[:16]
-    if archivo_personalizado
-    else 'dataset_modelado_28276'
-)
+st.sidebar.caption(f'Archivo: {procedencia} · Esquema: {esquema}')
+with st.sidebar.expander('Compatibilidad y variables ausentes'):
+    if notas_esquema:
+        for nota in notas_esquema:
+            st.write('• ' + nota)
+    else:
+        st.write('Variables del esquema de modelado oficial disponibles.')
+
 st.sidebar.caption(f'Archivo activo: {len(df):,} filas × {len(df.columns)} columnas')
 
 
@@ -235,7 +251,7 @@ if menu == 'Inicio':
     st.markdown(
         '**Proyecto integrador de Analítica de Datos.** '
         'Herramienta exploratoria de apoyo al análisis operativo de datos '
-        'hospitalarios históricos — Bucaramanga 2018–2021.'
+        'hospitalarios históricos — Bucaramanga. Los resultados se calculan para la base activa.'
     )
 
     if not {'costos', 'politraumatismo'}.issubset(df.columns):
@@ -530,145 +546,103 @@ elif menu == 'Análisis exploratorio':
 # PCA Y K-MEANS
 # ══════════════════════════════════════════════════════════════════════════════
 elif menu == 'PCA y K-means':
-    st.title('PCA y K-means: resultados del Entregable 3')
-    if archivo_personalizado:
-        st.info(
-            'La segmentación del grupo corresponde a otro archivo. Para mostrar '
-            'resultados descriptivos, carga también el CSV con columnas PC1, PC2 y cluster. '
-            'No se trasladarán clústeres del dataset oficial a otro conjunto.'
-        )
-        archivo_seg = st.file_uploader(
-            'Cargar CSV de segmentación (opcional)', type=['csv'], key='segmentos_pca'
-        )
-        if archivo_seg is None:
-            st.stop()
-        try:
-            seg = pd.read_csv(io.BytesIO(archivo_seg.getvalue()))
-        except Exception as exc:
-            st.error(f'No fue posible abrir los segmentos: {exc}')
-            st.stop()
-        necesarias_seg = {'PC1', 'PC2', 'cluster', 'edad', 'costos', 'politraumatismo', 'tipo_de_vehiculo'}
-        if seg.empty or not necesarias_seg.issubset(seg.columns):
-            faltan_seg = ', '.join(sorted(necesarias_seg.difference(seg.columns)))
-            st.error('Archivo de segmentación vacío o incompleto. Columnas requeridas: ' + faltan_seg)
-            st.stop()
-        st.caption('Segmentos descriptivos del archivo que acabas de cargar. Verifica su procedencia.')
-    else:
+    st.title('PCA y K-means: segmentación de la base activa')
+    st.caption('Los componentes y clústeres se calculan para la base elegida, nunca se trasladan de otro archivo.')
+
+    oficial = not archivo_personalizado
+    if oficial:
         try:
             seg = cargar_clusters()
-        except FileNotFoundError:
-            st.warning('Falta data/df_segmentado_clusters.csv. Carga el archivo de segmentación desde el menú lateral.')
-            st.stop()
-        st.caption(
-            'Resultados almacenados en df_segmentado_clusters.csv. '
-            'No se recalculan ni se atribuyen a un modelo supervisado.'
-        )
-
-    a, b, c = st.columns(3)
-    a.metric('Grupos', str(seg['cluster'].nunique()))
-    b.metric('Componentes retenidos (entregable)', '11' if not archivo_personalizado else 'No reportado')
-    c.metric('Varianza explicada (entregable)', '81,09 %' if not archivo_personalizado else 'No reportada')
-    st.warning(
-        'Los PCA y clústeres exportados son descriptivos. En la base original '
-        'incluyen información sobre costos y politraumatismo; no se reutilizan '
-        'como predictores supervisados para esos mismos objetivos.'
-    )
-    with st.expander('¿Cómo se determinaron los componentes PCA y los tres clústeres?', expanded=False):
-        st.markdown(
-            '**PCA:** combina las variables originales en componentes ortogonales que resumen la variación de la matriz. '
-            'La selección retiene la menor cantidad de componentes cuya varianza acumulada supera el 80 %. '
-            '**K-means:** asigna cada observación al centroide más próximo. '
-            'La elección de k combina inercia (Elbow), Silhouette, estabilidad entre semillas y utilidad de los perfiles. '
-            'Ninguna de estas técnicas demuestra por sí sola causalidad.'
-        )
-        if archivo_personalizado:
-            st.info('Los diagnósticos detallados de PCA y selección de k corresponden exclusivamente al dataset oficial.')
-        else:
+            from json import loads
             ruta_diag = BASE / 'resultados_pca_kmeans.json'
-            if ruta_diag.exists():
-                import json
-                diag_pca = json.loads(ruta_diag.read_text(encoding='utf-8'))
-                st.caption('Resultados recalculados usando la formulación del Cuaderno 3 sobre los 28.276 registros del dataset oficial; no se reentrenan al abrir la página.')
-                comp_pca = pd.DataFrame(diag_pca['variacion_componentes'])
-                st.plotly_chart(
-                    px.line(comp_pca, x='componente', y='acumulada_pct', markers=True,
-                            labels={'componente':'Número de componentes', 'acumulada_pct':'Varianza acumulada (%)'},
-                            title='PCA: varianza explicada acumulada'),
-                    use_container_width=True,
-                )
-                st.caption(
-                    f"Con {diag_pca['n_pca_80']} componentes se conserva "
-                    f"{diag_pca['varianza_retenida']*100:.2f} % de la varianza. "
-                    'Los componentes descartados conservan variación residual no modelada.'
-                )
-                st.subheader('Cargas de los primeros componentes (variables con mayor peso)')
-                nombres = diag_pca['cargas_6']['variables']
-                carga = pd.DataFrame(diag_pca['cargas_6']['componentes'], index=nombres)
-                filas_carga = []
-                for columna in carga.columns:
-                    for var in carga[columna].abs().nlargest(4).index:
-                        filas_carga.append({'Componente':columna, 'Variable':var,
-                                          'Carga':float(carga.loc[var,columna])})
-                st.dataframe(pd.DataFrame(filas_carga), hide_index=True, use_container_width=True)
-                st.caption('Las cargas identifican combinaciones de variables; no deben interpretarse como relaciones causales.')
-                seleccion = pd.DataFrame(diag_pca['seleccion_k'])
-                izquierda_k, derecha_k = st.columns(2)
-                with izquierda_k:
-                    st.plotly_chart(px.line(seleccion, x='k', y='inercia', markers=True,
-                                            title='Elbow: inercia según k',
-                                            labels={'k':'Número de clústeres (k)', 'inercia':'Inercia (SSE)'}),
-                                    use_container_width=True)
-                with derecha_k:
-                    st.plotly_chart(px.line(seleccion, x='k', y='silhouette', markers=True,
-                                            title='Silhouette según k (muestra de 6.000)',
-                                            labels={'k':'Número de clústeres (k)', 'silhouette':'Silhouette'}),
-                                    use_container_width=True)
-                st.subheader('Selección multicriterio de k')
-                st.dataframe(seleccion.rename(columns={'ari_medio':'Estabilidad ARI media',
-                                                         'cluster_minimo_pct':'Clúster menor (%)'}),
-                             hide_index=True, use_container_width=True)
-                st.success('Se seleccionó k = 3: Silhouette ≈ 0,189 y estabilidad ARI ≈ 0,99; se complementó la decisión con interpretabilidad operativa.')
-            else:
-                st.warning('No se encontró el archivo de resultados descriptivos de PCA/K-means.')
+            diag_pca = loads(ruta_diag.read_text(encoding='utf-8')) if ruta_diag.exists() else None
+            n_pca = diag_pca['n_pca_80'] if diag_pca else 11
+            var_retenida = diag_pca['varianza_retenida'] if diag_pca else .8109
+            st.caption('Resultados descriptivos precalculados del Entregable 3 sobre el dataset oficial.')
+        except FileNotFoundError:
+            oficial = False
+            st.warning('No se encontró la exportación oficial. Se recalculará la segmentación.')
+    if not oficial:
+        st.info('Se realizará un nuevo PCA y K-means (k=3) únicamente con las variables disponibles en este archivo. '
+                'La muestra y la especificación pueden diferir del Entregable 3; los resultados no son directamente comparables.')
+        try:
+            with st.spinner('Calculando PCA y K-means de la base activa...'):
+                analisis = calcular_segmentos_cache(df)
+            seg = analisis['segmentos']
+            n_pca = analisis['n_pca_80']
+            var_retenida = analisis['varianza_retenida']
+            diag_pca = None
+        except Exception as exc:
+            st.error(f'No fue posible segmentar esta base: {exc}')
+            st.stop()
 
-    caps = (
-        seg.groupby('cluster').agg(
-            Registros=('edad', 'size'),
-            Edad_mediana=('edad', 'median'),
-            Costo_mediano_COP=('costos', 'median'),
-            Costo_medio_COP=('costos', 'mean'),
-            Politraumatismo_pct=('politraumatismo',
-                lambda x: 100 * x.astype(str).str.lower().eq('si').mean()),
-            Moto_pct=('tipo_de_vehiculo',
-                lambda x: 100 * x.eq('moto').mean()),
-        )
-        .round(2)
-        .reset_index()
-    )
+    a,b,c,d = st.columns(4)
+    a.metric('Registros segmentados', f'{len(seg):,}')
+    b.metric('Grupos', str(seg['cluster'].nunique()))
+    c.metric('Componentes retenidos', str(n_pca))
+    d.metric('Varianza explicada', f'{var_retenida*100:.2f} %')
+    st.warning('El PCA descriptivo puede incluir costos y politraumatismo. Sus componentes '
+               'no se reutilizan como predictores supervisados de esos mismos resultados.')
+
+    with st.expander('PCA: varianza explicada, cargas y selección de k', expanded=False):
+        st.markdown('**PCA:** resume la variación mediante componentes ortogonales. '
+                    '**K-means:** agrupa según distancias a centroides. Se usa k=3 para '
+                    'permitir comparar perfiles, sin afirmar que sean categorías naturales.')
+        if oficial and diag_pca:
+            componentes = pd.DataFrame(diag_pca['variacion_componentes'])
+            st.plotly_chart(px.line(componentes, x='componente', y='acumulada_pct', markers=True,
+                labels={'componente':'Número de componentes','acumulada_pct':'Varianza acumulada (%)'},
+                title='Varianza acumulada (dataset oficial)'), use_container_width=True)
+            nombres = diag_pca['cargas_6']['variables']
+            carga = pd.DataFrame(diag_pca['cargas_6']['componentes'], index=nombres)
+            seleccion = pd.DataFrame(diag_pca['seleccion_k'])
+        else:
+            componentes = pd.DataFrame({'Componente': np.arange(1, len(analisis['varianza_acumulada'])+1),
+                          'Varianza acumulada (%)': np.array(analisis['varianza_acumulada'])*100})
+            st.plotly_chart(px.line(componentes, x='Componente', y='Varianza acumulada (%)', markers=True,
+                title='Varianza acumulada (base seleccionada)'), use_container_width=True)
+            carga = analisis['cargas']
+            with st.spinner('Evaluando k=2 a 6 sobre una muestra (hasta 3.500 registros)...'):
+                seleccion = diagnostico_k_cache(analisis)
+            st.caption('Elbow y Silhouette son diagnósticos exploratorios calculados sobre una muestra reproducible; '
+                       'los clústeres finales se ajustan con todas las filas válidas.')
+        filas_carga = []
+        for col in carga.columns[:min(3,len(carga.columns))]:
+            for v in carga[col].abs().nlargest(4).index:
+                filas_carga.append({'Componente':str(col), 'Variable':str(v), 'Carga':float(carga.loc[v,col])})
+        st.dataframe(pd.DataFrame(filas_carga), use_container_width=True, hide_index=True)
+        i,d = st.columns(2)
+        with i:
+            st.plotly_chart(px.line(seleccion, x='k', y='inercia', markers=True,
+                title='Elbow: inercia según k'), use_container_width=True)
+        with d:
+            st.plotly_chart(px.line(seleccion, x='k', y='silhouette', markers=True,
+                title='Silhouette según k'), use_container_width=True)
+        st.dataframe(seleccion, use_container_width=True, hide_index=True)
+
+    caps = (seg.groupby('cluster').agg(
+        Registros=('edad', 'size'), Edad_mediana=('edad', 'median'),
+        Costo_mediano_COP=('costos', 'median'), Costo_medio_COP=('costos', 'mean'),
+        Politraumatismo_pct=('politraumatismo',lambda x:100*x.astype(str).str.lower().eq('si').mean()),
+        Moto_pct=('tipo_de_vehiculo',lambda x:100*x.astype(str).eq('moto').mean()),
+    ).round(2).reset_index())
+    st.subheader('Perfiles de los tres clústeres')
     st.dataframe(caps, use_container_width=True, hide_index=True)
-    n = st.slider(
-        'Puntos visibles en la proyección PC1 vs PC2',
-        min_value=500, max_value=12000, value=5000, step=500,
-    )
-    mostrar = seg.sample(min(n, len(seg)), random_state=42).copy()
+    max_puntos = min(12000, len(seg))
+    if max_puntos > 500:
+        n = st.slider('Puntos visibles en PC1 vs PC2', 500, max_puntos,
+                      min(5000,max_puntos), 500)
+    else:
+        n = max_puntos
+    mostrar = seg.sample(min(n,len(seg)), random_state=42).copy()
     mostrar['cluster'] = mostrar['cluster'].astype(str)
-    st.plotly_chart(
-        px.scatter(
-            mostrar, x='PC1', y='PC2', color='cluster', opacity=0.55,
-            hover_data=['edad', 'costos', 'politraumatismo'],
-            title='Proyección de los tres clústeres en los dos primeros componentes',
-        ),
-        use_container_width=True,
-    )
-    st.plotly_chart(
-        px.bar(caps, x='cluster', y='Costo_mediano_COP', title='Costo mediano por clúster'),
-        use_container_width=True,
-    )
-    st.download_button(
-        'Descargar segmentos CSV',
-        seg.to_csv(index=False).encode('utf-8-sig'),
-        'segmentacion_pca_kmeans.csv', 'text/csv',
-    )
+    st.plotly_chart(px.scatter(mostrar, x='PC1', y='PC2', color='cluster', opacity=.5,
+        hover_data=['edad','costos','politraumatismo'],
+        title='Proyección de clústeres en PC1 y PC2'), use_container_width=True)
+    st.plotly_chart(px.bar(caps, x='cluster', y='Costo_mediano_COP',
+        title='Costo mediano por clúster'),use_container_width=True)
+    st.download_button('Descargar segmentos CSV',seg.to_csv(index=False).encode('utf-8-sig'),
+        f'segmentos_{"oficial" if oficial else "base_activa"}.csv','text/csv')
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -678,14 +652,18 @@ elif menu in ['Regresión de costos', 'Clasificación']:
     objetivo = 'Costos' if menu == 'Regresión de costos' else 'Politraumatismo'
     st.title('Regresión de costos' if objetivo == 'Costos' else 'Clasificación de politraumatismo')
 
-    faltan = sorted(NECESARIAS.difference(df.columns))
-    if faltan:
-        st.error(
-            f'Faltan variables para entrenar según el Entregable 4: '
-            f'**{", ".join(faltan)}**. '
-            'Verifica que el CSV cargado contenga todas las columnas requeridas.'
-        )
+    try:
+        pref_activo = predictores_disponibles(df)
+        if objetivo == 'Costos' and 'costos' not in df.columns:
+            raise ValueError('Falta la variable objetivo costos.')
+    except ValueError as exc:
+        st.error(str(exc))
         st.stop()
+    st.caption('Predictores categóricos disponibles para esta base: ' + ', '.join(pref_activo))
+    if archivo_personalizado:
+        st.warning('Se entrenará una especificación adaptada a las columnas reales de esta base. '
+                   'No se incorporan predictores faltantes ni se comparan directamente sus métricas '
+                   'con las del modelo oficial de 28.276 registros.')
 
     st.caption(
         'Separación estratificada 80/20 (semilla 42). '

@@ -1,6 +1,6 @@
 # Proyecto integrador — Analítica de Datos | Entregable 5
 
-Aplicación interactiva y analítica para el estudio de accidentalidad vial y costos de atención hospitalaria en Bucaramanga (2018–2021), desarrollada en Streamlit.
+Aplicación interactiva para analizar accidentalidad vial y costos hospitalarios. Admite el dataset de modelado oficial, el CSV original (crudo) y la base limpia intermedia; cada conjunto se procesa con sus columnas disponibles.
 
 > **Datos para demostración:** el equipo responsable indica que los dos CSV incluidos son muestras ficticias para fines académicos. Esta afirmación no se verificó de forma independiente. Antes de usar un repositorio público, se debe comprobar que no contengan información real identificable ni datos restringidos. Las métricas de ejemplo no deben presentarse como rendimiento validado en pacientes reales.
 
@@ -12,6 +12,12 @@ Aplicación interactiva y analítica para el estudio de accidentalidad vial y co
 - `data/df_segmentado_clusters.csv`: 28.276 filas y 25 columnas. Incorpora las columnas `PC1`, `PC2` y `cluster` correspondientes a la segmentación descriptiva original del Entregable 3.
 - `fase2_experimento_comparativo_completo.csv`: tabla de verificación experimental que compara el desempeño de los clasificadores con y sin variables diagnósticas (`patologia_principal` y `region_principal`).
 
+- `data/BBDDcruda_original.csv`: 34.306 registros y 33 columnas originales en mayúsculas. Incluye 5.470 registros con costo nulo, inválido o ≤ 0; para PCA y regresión se excluyen solo de los análisis que requieren log₁₀(costos). En clasificación los registros con costo no válido permanecen si tienen variables de entrada y respuesta válidas.
+- `data/BBDDlimpia.csv`: 18.058 registros y 29 columnas. Su versión intermedia no contiene `relacion_usuario_accidente`, `tipo_administradora`, `patologia_principal` ni `region_principal`. Esas variables no se reconstruyen ni se llenan con valores ficticios.
+- `adaptador_datos.py`: transforma nombres y codificaciones y vuelve a calcular las variables temporales disponibles. Cuando se cambia de base, recalcula la segmentación y entrena los modelos solo con las columnas existentes.
+
+**Importante:** las cifras de desempeño publicadas en el apartado de validación independiente corresponden SOLO a `df_modelado.csv`. Los modelos entrenados con la base original y la limpia tienen otra muestra y otra matriz de predictores, por lo que no deben compararse directamente con los resultados del Entregable 4.
+
 > **Nota sobre el Entregable 2:** El entregable exploratorio previo utilizaba una base preliminar de 28.346 registros. La presente aplicación toma como referencia única el dataset de modelado (28.276 registros) para asegurar consistencia con las etapas de reducción dimensional y modelado predictivo.
 
 ---
@@ -22,6 +28,15 @@ Aplicación interactiva y analítica para el estudio de accidentalidad vial y co
 - **Versión de Python recomendada:** Python 3.11 (documentada en `.python-version`; seleccionar también Python 3.11 en las opciones avanzadas del despliegue si el proveedor no toma este archivo automáticamente).
 - **Semilla global:** `RANDOM_STATE = 42`.
 - **Partición analítica:** 80 % entrenamiento / 20 % prueba (estratificada por la variable `politraumatismo`).
+
+### Elegir la base en la aplicación
+En el menú lateral, seleccionar una de estas opciones:
+
+1. **Modelado oficial (28.276):** usa los resultados originales del grupo y la segmentación ya calculada.
+2. **Base cruda original (34.306):** normaliza encabezados y categorías; recalcula PCA y K-means para los registros válidos, y entrena regresión/clasificación utilizando solamente los predictores existentes.
+3. **Base limpia intermedia (18.058):** recalcula PCA y K-means; adapta los modelos a las variables realmente disponibles sin inventar las cuatro ausentes.
+
+El cargador lateral de CSV tiene prioridad sobre el selector de ejemplos. Se aceptan CSV con encabezados originales o normalizados, separados por coma o punto y coma. La información de `data/` no se modifica. Los análisis históricos de sensibilidad de 28.276 registros se muestran exclusivamente para el modelo oficial.
 
 ### Instrucciones paso a paso
 1. Abrir una terminal en el directorio raíz del proyecto.
@@ -60,6 +75,8 @@ pandas>=2.0,<3
 numpy>=1.24,<3
 scikit-learn>=1.4,<2
 plotly>=5.19,<7
+matplotlib>=3.7,<4
+seaborn>=0.13,<1
 ```
 
 ---
@@ -69,6 +86,8 @@ plotly>=5.19,<7
 ```text
 ├── app.py                                       # Aplicación principal de Streamlit (7 módulos integrados)
 ├── modelo_cuaderno4.py                          # Transformador ExtractorPCAKMeans ajustado solo en train
+├── adaptador_datos.py                            # Normalizador multiesquema y PCA/K-means descriptivo
+├── test_integracion.py                           # Prueba automatizada de los tres esquemas
 ├── requirements.txt                             # Especificación de paquetes instalables
 ├── .python-version                              # Fijación de Python 3.11 para Streamlit Cloud
 ├── .gitignore                                   # Exclusiones generales; permite los dos CSV de demostración
@@ -150,3 +169,22 @@ Estas cifras dependen de las versiones de los paquetes y de la partición de pru
 - **PCA/K-means:** la sección descriptiva muestra varianza acumulada, variables con cargas dominantes y diagnóstico Elbow, Silhouette y estabilidad multisemilla obtenidos reproduciendo la metodología del Cuaderno 3 en `resultados_pca_kmeans.json`; resultados fijos sobre la base oficial. El análisis supervisado reajusta sus propias transformaciones exclusivamente en entrenamiento.
 - **Bibliotecas solicitadas:** pandas, numpy, scikit-learn, matplotlib, seaborn y streamlit; se conserva Plotly para las visualizaciones interactivas.
 - **Alcance:** el informe final, las fuentes, el análisis de faltantes y atípicos, la defensa individual y otros elementos de los entregables 1–4 y 6–7 se documentan en sus propios archivos. La aplicación no los sustituye.
+
+
+## 8. Validación de compatibilidad multibase
+
+Desde la carpeta del proyecto, con scikit-learn, pandas y numpy instalados:
+
+```bash
+python test_integracion.py
+```
+
+Esta prueba comprueba el procesamiento de las tres bases, regresión, clasificación (árbol) y segmentación nueva con diagnóstico Elbow/Silhouette. No reemplaza la prueba visual de Streamlit en el navegador.
+
+| Archivo | Filas originales | Filas elegibles para PCA (costo > 0 y edad válida) | PCA al 80 % | Modelos |
+|---|---:|---:|---:|---|
+| Modelado oficial | 28.276 | 28.276 | 11 comp. descriptivos | Con los predictores completos |
+| Base limpia intermedia | 18.058 | 18.058 | 4 comp. descriptivos | Adaptados, sin cuatro predictores ausentes |
+| Base cruda original | 34.306 | 28.834 | 7 comp. descriptivos | Adaptados, sin dos predictores clínicos sintetizados |
+
+Los componentes descriptivos se ajustan sobre toda la base válida y **no se utilizan** como predictores en las tareas supervisadas: para esas tareas el transformador se ajusta solo con entrenamiento. La normalización técnica de los CSV no equivale a la limpieza estadística del Entregable 2.
