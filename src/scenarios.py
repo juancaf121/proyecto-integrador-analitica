@@ -40,7 +40,8 @@ def correr_escenarios(
     for nombre, f in factores.items():
         par = construir_parametros(df_forecasts, df_clean, supuestos, f, cap_nodo)
         estricto = resolver_modelo(par, permitir_faltantes=False)
-        if estricto["optimo"]:
+        if estricto["optimo"] or estricto["estado"] != "Infeasible":
+            # Un error técnico o un estado indeterminado no equivale a infactibilidad.
             mostrado, con_falt = estricto, False
         else:
             mostrado, con_falt = resolver_modelo(par, permitir_faltantes=True), True
@@ -49,8 +50,13 @@ def correr_escenarios(
 
 
 def _estado(e: dict) -> str:
+    estado_estricto = e["estricto"].get("estado", "Desconocido")
+    if e["estricto"].get("optimo", False):
+        return "Óptimo, 100 % atendido"
+    if estado_estricto in ("Solver no disponible", "Error al resolver"):
+        return estado_estricto
     if not e["con_faltantes"]:
-        return "Óptimo"
+        return estado_estricto
     return "INFACTIBLE sin faltantes" if e["mostrado"]["optimo"] else "INFACTIBLE (sin solución)"
 
 
@@ -84,6 +90,8 @@ def tabla_resumen(esc: dict[str, dict]) -> pd.DataFrame:
             "Costo total Z (COP)": r["Z"], "Costo/ud atendida (COP)": r["Z"] / max(dem - falt, 1),
         })
     df = pd.DataFrame(filas)
+    if "Costo total Z (COP)" not in df:
+        df["Costo total Z (COP)"] = float("nan")
     base = df.loc[df["Escenario"] == "Base", "Costo total Z (COP)"]
     if len(base) and pd.notna(base.iloc[0]):
         df["Δ Z vs Base (%)"] = (df["Costo total Z (COP)"] / base.iloc[0] - 1) * 100

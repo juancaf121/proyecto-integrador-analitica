@@ -228,17 +228,17 @@ def resolver_modelo(par: ParametrosRed, permitir_faltantes: bool = False) -> dic
     prob = pulp.LpProblem("Plan_Produccion_Trasbordo_Distribucion", pulp.LpMinimize)
 
     # Variables (nombres ASCII para evitar problemas de codificación con el solver)
-    Q = {(f, p): pulp.LpVariable(f"Q_f{_idx(F, f)}_p{_idx(P, p)}", lowBound=0) for f in F for p in P}
+    Q = {(f, p): prob.add_variable(f"Q_f{_idx(F, f)}_p{_idx(P, p)}", lowBound=0) for f in F for p in P}
     X = {
-        (f, n, p): pulp.LpVariable(f"X_f{_idx(F, f)}_n{_idx(N, n)}_p{_idx(P, p)}", lowBound=0)
+        (f, n, p): prob.add_variable(f"X_f{_idx(F, f)}_n{_idx(N, n)}_p{_idx(P, p)}", lowBound=0)
         for f in F for n in N for p in P
     }
     Y = {
-        (n, c, p): pulp.LpVariable(f"Y_n{_idx(N, n)}_c{_idx(C, c)}_p{_idx(P, p)}", lowBound=0)
+        (n, c, p): prob.add_variable(f"Y_n{_idx(N, n)}_c{_idx(C, c)}_p{_idx(P, p)}", lowBound=0)
         for n in N for c in C for p in P
     }
     S = (
-        {(p, c): pulp.LpVariable(f"S_p{_idx(P, p)}_c{_idx(C, c)}", lowBound=0) for p in P for c in C}
+        {(p, c): prob.add_variable(f"S_p{_idx(P, p)}_c{_idx(C, c)}", lowBound=0) for p in P for c in C}
         if permitir_faltantes
         else {}
     )
@@ -285,15 +285,35 @@ def resolver_modelo(par: ParametrosRed, permitir_faltantes: bool = False) -> dic
             prob += pulp.lpSum(Y[n, c, p] for p in P) <= par.CapD[n, c], f"R6b_CapD_n{_idx(N, n)}_c{_idx(C, c)}"
     # R7. No negatividad: definida con lowBound=0 en todas las variables.
 
-    prob.solve(pulp.PULP_CBC_CMD(msg=False))
-    estado = pulp.LpStatus[prob.status]
+    # PuLP >= 4: add_variable, constraints() y LpSolveStats.status_str.
+    # PuLP 3.3.x mantiene add_variable, pero devuelve un código y guarda prob.status.
+    # `pulp[cbc]` instala el ejecutable CBC requerido por COIN_CMD en PuLP 4.x.
+    contar_restricciones = lambda: len(prob.constraints() if callable(prob.constraints) else prob.constraints)
+    try:
+        solver = pulp.COIN_CMD(msg=False)
+        if not solver.available():
+            raise RuntimeError("CBC no está disponible. Instale `pulp[cbc]` o configure CBC en PATH.")
+        estadisticas = prob.solve(solver)
+        if hasattr(estadisticas, "status_str"):
+            estado = estadisticas.status_str  # PuLP 4.x
+        else:
+            estado = pulp.LpStatus[prob.status]  # PuLP 3.x
+    except Exception as exc:
+        return {
+            "estado": "Solver no disponible", "optimo": False,
+            "permitir_faltantes": permitir_faltantes,
+            "n_variables": len(prob.variables()),
+            "n_restricciones": contar_restricciones(),
+            "parametros": par,
+            "diagnostico": [f"No se pudo ejecutar el solucionador de programación lineal: {exc}"],
+        }
 
     resultado: dict = {
         "estado": estado,
         "optimo": estado == "Optimal",
         "permitir_faltantes": permitir_faltantes,
         "n_variables": len(prob.variables()),
-        "n_restricciones": len(prob.constraints),
+        "n_restricciones": contar_restricciones(),
         "parametros": par,
     }
     if estado != "Optimal":
@@ -332,6 +352,7 @@ def resolver_modelo(par: ParametrosRed, permitir_faltantes: bool = False) -> dic
     c_dist = float(df_Y["Costo_Total"].sum())
     c_penal = float(sum(par.Penal[p, c] * v(S[p, c]) for p in P for c in C)) if permitir_faltantes else 0.0
 
+    verificacion = verificar_solucion(par, df_Q, df_X, df_Y, df_S)
     resultado.update(
         {
             "Z": float(pulp.value(prob.objective)),
@@ -344,9 +365,16 @@ def resolver_modelo(par: ParametrosRed, permitir_faltantes: bool = False) -> dic
             "df_Y": df_Y,
             "df_S": df_S,
             "utilizacion": calcular_utilizaciones(par, df_Q, df_X, df_Y),
-            "verificacion": verificar_solucion(par, df_Q, df_X, df_Y, df_S),
+            "verificacion": verificacion,
         }
     )
+    if not bool(verificacion["Cumple"].all()):
+        resultado["optimo"] = False
+        resultado["estado"] = "Verificación fallida"
+        resultado["diagnostico"] = [
+            "La solución numérica no cumple todas las restricciones dentro de la "
+            "tolerancia establecida. No se presenta como óptima."
+        ]
     return resultado
 
 

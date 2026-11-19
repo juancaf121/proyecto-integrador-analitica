@@ -403,6 +403,40 @@ def build_product_summary_table(
     return pd.DataFrame(rows)
 
 
+def details_from_saved_metrics(
+    df_clean: pd.DataFrame,
+    df_metrics: pd.DataFrame,
+    producto: str,
+    cliente: str,
+) -> dict[str, Any]:
+    """Detalle de serie respaldado por CSV. No inventa predicciones walk-forward."""
+    filtrado = df_metrics[(df_metrics["Producto"] == producto) & (df_metrics["Cliente"] == cliente)]
+    if len(filtrado) != 1:
+        raise ValueError("No hay una fila única de métricas para la combinación seleccionada.")
+    r = filtrado.iloc[0]
+    sub = df_clean.loc[(df_clean["Producto"] == producto) & (df_clean["Cliente"] == cliente)].copy()
+    sub["Fecha"] = pd.to_datetime(sub["Fecha"])
+    sub = sub.sort_values("Fecha")
+    sufijos = {"Promedio móvil": "Promedio_movil", "Holt": "Holt",
+               "Holt-Winters": "Holt_Winters", "MLP": "MLP"}
+    metrics = {
+        modelo: {k: float(r[f"{k}_{sufijos[modelo]}"]) for k in ("MAE", "RMSE", "MAPE")}
+        for modelo in MODEL_NAMES
+    }
+    pred = {modelo: int(r[f"Pred_Nov2026_{sufijos[modelo]}"]) for modelo in MODEL_NAMES}
+    return {
+        "fechas": sub["Fecha"].to_numpy(),
+        "y_real": sub["Demanda"].to_numpy(),
+        "val_fechas": sub["Fecha"].iloc[-6:].to_numpy(),
+        "val_preds": None,  # La fuente guardada no incluye pronósticos mensuales de validación.
+        "nov_preds": pred,
+        "metrics": metrics,
+        "winner": str(r["Modelo_Ganador"]),
+        "planta": str(r["Planta"]),
+        "source": "precalculado",
+    }
+
+
 # ==============================================================================
 # Gráficos interactivos en Plotly (Fases 3 y 4)
 # ==============================================================================
@@ -424,6 +458,28 @@ def plot_series_forecast_comparison(
     winner = series_detail["winner"]
 
     fig = go.Figure()
+
+    if val_preds is None:
+        # Modo rápido: mostrar únicamente lo existente en los CSV, sin fabricar
+        # valores por mes de la validación walk-forward.
+        fig.add_trace(go.Scatter(
+            x=fechas, y=y_real, mode="lines+markers", name="Demanda histórica",
+            line=dict(color="#0f4c81", width=2.5),
+        ))
+        for modelo in MODEL_NAMES:
+            fig.add_trace(go.Scatter(
+                x=[pd.Timestamp(FORECAST_DATE_STR)], y=[nov_preds[modelo]],
+                mode="markers", name=f"Pronóstico {modelo}",
+                marker=dict(size=15 if modelo == winner else 10,
+                            color=MODEL_COLORS[modelo]),
+            ))
+        fig.update_layout(
+            title=f"Histórico y pronósticos guardados — {producto} · {cliente}",
+            template="plotly_white", height=480,
+            margin=dict(l=50, r=30, t=70, b=50),
+            xaxis_title="Período", yaxis_title="Unidades demandadas",
+        )
+        return fig
 
     # Zona sombreada de validación temporal (6 meses)
     fig.add_vrect(

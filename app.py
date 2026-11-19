@@ -2,12 +2,14 @@
 Plataforma Inteligente para la Planeación de la Producción y la Distribución
 mediante Analítica Predictiva y Prescriptiva.
 
-Entrega 1 y 2:
+Entrega integradora — Fases 1 a 7:
 - Fase 1: Consolidación de Base de Datos Histórica (Panel 10 × 5 × 36 = 1.800)
 - Fase 2: Proceso ETL Auditable y Analítica Descriptiva Interactiva
 - Fase 3: Modelos de Pronóstico (Promedio Móvil, Holt, Holt-Winters, MLP)
 - Fase 4: Evaluación Walk-Forward, Selección Automática y Matriz D_{p,c}
 - Fase 5: Modelo de Optimización (PuLP) de Producción, Trasbordo y Distribución
+- Fase 6: Escenarios de demanda y capacidad
+- Fase 7: Tablero ejecutivo integrado, controles de calidad y exportación
 """
 
 from __future__ import annotations
@@ -46,6 +48,8 @@ from src.etl import (
 )
 from src.forecasting import (
     MODEL_NAMES,
+    build_product_summary_table,
+    details_from_saved_metrics,
     plot_demand_matrix_heatmap,
     plot_series_forecast_comparison,
     plot_winner_distribution_donut,
@@ -66,6 +70,12 @@ from src.optimization import (
     resolver_modelo,
     tablas_parametros,
 )
+from src.executive import (
+    validar_cadena_datos,
+    tabla_demanda_atencion,
+    indicadores_ejecutivos,
+    conclusiones_escenarios,
+)
 from src.scenarios import (
     correr_escenarios, restricciones_activas, tabla_resumen, tabla_plantas, tabla_nodos,
     tabla_clientes, plot_costo_escenarios, plot_produccion_planta_esc, plot_utilizacion_esc, plot_clientes_esc,
@@ -75,7 +85,7 @@ from src.scenarios import (
 # Configuración general de la página y estilos
 # ==============================================================================
 st.set_page_config(
-    page_title="Plataforma Predictiva y Prescriptiva - Fases 1 a 6",
+    page_title="Plataforma Inteligente | Analítica predictiva y prescriptiva",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -102,30 +112,70 @@ st.markdown(
         font-size: 0.95rem;
         color: #e6f2f8;
     }
+    /* Fondo oscuro constante, legibilidad alta en todas las pestañas. */
     .section-card {
-        background-color: #f8fafc;
-        border: 1px solid #e2e8f0;
-        border-left: 4px solid #0f4c81;
-        border-radius: 8px;
-        padding: 0.9rem 1.1rem;
-        margin-bottom: 0.85rem;
-    }
-    div[data-testid="stMetric"] {
-        background-color: #f8fafc;
-        border: 1px solid #e2e8f0;
+        background: #172a40;
+        color: #f1f5f9;
+        border: 1px solid #42607e;
+        border-left: 4px solid #22b8ae;
         border-radius: 10px;
-        padding: 0.75rem 0.9rem;
+        padding: 1rem 1.1rem;
+        line-height: 1.65;
+        margin-bottom: 0.95rem;
+    }
+    .section-card b, .section-card strong { color: #ffffff; }
+    .section-card code {
+        background: #263e59;
+        color: #b9fff0;
+        border-radius: 4px;
+        padding: 0.12rem 0.26rem;
+        font-weight: 600;
+    }
+    /* Las tarjetas st.metric antes tenían fondo claro y tipografía clara. */
+    div[data-testid="stMetric"] {
+        background: #172a40 !important;
+        border: 1px solid #42607e !important;
+        border-radius: 12px !important;
+        padding: 0.8rem 1rem !important;
+        min-height: 106px;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"],
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] *,
+    div[data-testid="stMetric"] [data-testid="stMetricValue"],
+    div[data-testid="stMetric"] [data-testid="stMetricValue"] * {
+        color: #f1f5f9 !important;
+        opacity: 1 !important;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricLabel"] {
+        font-weight: 650;
+    }
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"],
+    div[data-testid="stMetric"] [data-testid="stMetricDelta"] * {
+        color: #a6f3cf !important;
+        opacity: 1 !important;
+    }
+    /* Foco y selección visibles en pestañas/controles del tema oscuro. */
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #71f2dc !important;
+        font-weight: 700;
+    }
+    @media (max-width: 900px) {
+        .main-banner { padding: 1rem; }
+        .main-banner h1 { font-size: 1.2rem; }
+        div[data-testid="stMetric"] { min-height: 90px; }
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-RAW_DEFAULT_PATH = Path("demanda_historica_cruda.csv")
-CLEAN_CSV_PATH = Path("data/demanda_limpia_1800.csv")
-AUDIT_JSON_PATH = Path("data/auditoria_etl.json")
-FORECASTS_CSV_PATH = Path("data/pronosticos_nov2026.csv")
-METRICS_CSV_PATH = Path("data/metricas_modelos_50series.csv")
+# Las rutas se resuelven desde el proyecto (no desde el directorio del terminal).
+BASE_DIR = Path(__file__).resolve().parent
+RAW_DEFAULT_PATH = BASE_DIR / "demanda_historica_cruda.csv"
+CLEAN_CSV_PATH = BASE_DIR / "data/demanda_limpia_1800.csv"
+AUDIT_JSON_PATH = BASE_DIR / "data/auditoria_etl.json"
+FORECASTS_CSV_PATH = BASE_DIR / "data/pronosticos_nov2026.csv"
+METRICS_CSV_PATH = BASE_DIR / "data/metricas_modelos_50series.csv"
 
 
 @st.cache_data(show_spinner="Ejecutando pipeline ETL auditable...")
@@ -134,8 +184,8 @@ def ejecutar_etl_oficial(file_mtime: float) -> tuple[pd.DataFrame, pd.DataFrame,
     _ = file_mtime
     return run_etl_pipeline(
         raw_source=RAW_DEFAULT_PATH,
-        output_csv_path=CLEAN_CSV_PATH,
-        audit_json_path=AUDIT_JSON_PATH,
+        output_csv_path=None,
+        audit_json_path=None,
     )
 
 
@@ -160,6 +210,20 @@ def ejecutar_pronosticos_cacheados(
         output_forecasts_path=FORECASTS_CSV_PATH if exportar_csv else None,
         output_metrics_path=METRICS_CSV_PATH if exportar_csv else None,
     )
+
+
+@st.cache_data(show_spinner=False)
+def cargar_pronosticos_guardados(fecha_csv: float, fecha_metricas: float) -> dict:
+    """Modo rápido; los datos se recalculan al cambiar los archivos CSV."""
+    _ = (fecha_csv, fecha_metricas)
+    pron = pd.read_csv(FORECASTS_CSV_PATH)
+    metrics = pd.read_csv(METRICS_CSV_PATH)
+    return {
+        "df_forecasts": pron,
+        "df_metrics": metrics,
+        "df_product_summary": build_product_summary_table(metrics, criterio="MAPE"),
+        "series_details": {},
+    }
 
 
 def convertir_df_a_excel_bytes(df: pd.DataFrame, sheet_name: str = "Datos") -> bytes:
@@ -207,12 +271,36 @@ def resolver_optimizacion_cacheada(
         factor_demanda=factor_demanda,
         cap_nodo=dict(cap_nodo_items),
     )
-    return resolver_modelo(par, permitir_faltantes=permitir_faltantes)
+    try:
+        return resolver_modelo(par, permitir_faltantes=permitir_faltantes)
+    except Exception as exc:
+        # Una pestaña fallida no debe interrumpir el resto de Streamlit.
+        # El fallo se comunica como ausencia de plan, no como resultado óptimo.
+        return {
+            "estado": "Error al resolver",
+            "optimo": False,
+            "permitir_faltantes": permitir_faltantes,
+            "n_variables": 0,
+            "n_restricciones": 0,
+            "parametros": par,
+            "diagnostico": [f"Falló la construcción o resolución del modelo: {type(exc).__name__}: {exc}"],
+        }
 
 
 @st.cache_data(show_spinner="Resolviendo los 3 escenarios con PuLP (CBC)...")
 def correr_escenarios_cacheado(df_forecasts, df_clean, supuestos_items, cap_nodo_items):
-    return correr_escenarios(df_forecasts, df_clean, dict(supuestos_items), dict(cap_nodo_items))
+    try:
+        return correr_escenarios(df_forecasts, df_clean, dict(supuestos_items), dict(cap_nodo_items))
+    except Exception as exc:
+        # Se evita que una excepción en escenarios inutilice las otras fases.
+        error = {
+            "estado": "Error al resolver", "optimo": False,
+            "diagnostico": [f"Error al calcular escenarios: {type(exc).__name__}: {exc}"],
+        }
+        return {
+            nombre: {"factor": factor, "estricto": error, "mostrado": error, "con_faltantes": False}
+            for nombre, factor in (("Optimista", 0.90), ("Base", 1.0), ("Pesimista", 1.10))
+        }
 
 
 # ==============================================================================
@@ -237,7 +325,7 @@ with st.sidebar:
             help="El archivo debe contener las columnas: Fecha, Producto, Cliente, Demanda, Planta, Precio.",
         )
 
-    if st.button("🔄 Recalcular ETL y Exportar CSV/JSON", width="stretch"):
+    if st.button("🔄 Recalcular ETL (sin alterar archivos)", width="stretch"):
         st.cache_data.clear()
 
     st.divider()
@@ -271,7 +359,7 @@ else:
         st.stop()
     mtime = RAW_DEFAULT_PATH.stat().st_mtime
     df_clean, df_pre_interp, audit = ejecutar_etl_oficial(mtime)
-    fuente_activa = f"Oficial: `{RAW_DEFAULT_PATH.name}` → Exportado en `{CLEAN_CSV_PATH.as_posix()}`"
+    fuente_activa = f"Oficial: `{RAW_DEFAULT_PATH.name}` → ETL recalculado en memoria"
 
 with st.sidebar:
     st.divider()
@@ -291,14 +379,15 @@ st.markdown(
     """
     <div class="main-banner">
         <h1>Plataforma Inteligente para la Planeación de la Producción y la Distribución</h1>
-        <p>Analítica Predictiva y Prescriptiva · Fases 1–2 (ETL y Descriptiva) , Fases 3–4 (Pronósticos, Validación Walk-Forward y Selección Automática) y Fase 5 (Optimización con PuLP)</p>
+        <p>Datos históricos → ETL → Pronóstico por producto-cliente → Optimización → Escenarios → Decisiones integradas · Horizonte: noviembre de 2026</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+tab8, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     [
+        "🧭 Fase 7: Panel ejecutivo",
         "📦 Fase 1: Base Consolidada (10×5×36)",
         "🛠️ Fase 2A: Auditoría del Proceso ETL",
         "📊 Fase 2B: Analítica Descriptiva",
@@ -864,6 +953,37 @@ with tab4:
         unsafe_allow_html=True,
     )
 
+    disponibles_guardados = (
+        uploaded_file is None
+        and FORECASTS_CSV_PATH.exists()
+        and METRICS_CSV_PATH.exists()
+        and CLEAN_CSV_PATH.exists()
+    )
+    if disponibles_guardados:
+        # Los archivos precalculados solo son válidos si la base fuente sigue
+        # siendo exactamente la que produjo esos resultados.
+        df_ref = pd.read_csv(CLEAN_CSV_PATH)
+        df_actual = df_clean.copy()
+        df_ref["Fecha"] = pd.to_datetime(df_ref["Fecha"])
+        df_actual["Fecha"] = pd.to_datetime(df_actual["Fecha"])
+        disponibles_guardados = df_ref.equals(df_actual)
+
+    if disponibles_guardados:
+        modo_pronostico = st.radio(
+            "Modo de cálculo de pronósticos",
+            ["Utilizar resultados guardados (rápido)", "Reentrenar los 50 modelos por método (puede tardar)"] ,
+            horizontal=True, key="f3_modo"
+        )
+    else:
+        modo_pronostico = "Reentrenar los 50 modelos por método (puede tardar)"
+        st.warning("No hay resultados guardados compatibles con esta base. "
+                   "Es necesario entrenar y validar los modelos para generar sus pronósticos.")
+    modo_rapido = modo_pronostico.startswith("Utilizar")
+    if modo_rapido:
+        st.info("Se usan los resultados oficiales precalculados (selección por MAPE; promedio móvil 3, "
+                "Holt-Winters aditivo, MLP con 4 rezagos y 200 iteraciones). "
+                "Cambie al modo de reentrenamiento para modificar la configuración y obtener nuevas métricas.")
+
     hp1, hp2, hp3, hp4, hp5 = st.columns(5)
     with hp1:
         ma_window = st.slider(
@@ -872,6 +992,7 @@ with tab4:
             max_value=6,
             value=3,
             key="f3_ma_k",
+            disabled=modo_rapido,
         )
     with hp2:
         hw_seasonal = st.selectbox(
@@ -880,6 +1001,7 @@ with tab4:
             index=0,
             format_func=lambda v: "Aditiva ('add')" if v == "add" else "Multiplicativa ('mul')",
             key="f3_hw_seas",
+            disabled=modo_rapido,
         )
     with hp3:
         mlp_lags = st.slider(
@@ -888,6 +1010,7 @@ with tab4:
             max_value=6,
             value=4,
             key="f3_mlp_lags",
+            disabled=modo_rapido,
         )
     with hp4:
         mlp_max_iter = st.slider(
@@ -897,6 +1020,7 @@ with tab4:
             value=200,
             step=50,
             key="f3_mlp_iter",
+            disabled=modo_rapido,
         )
     with hp5:
         criterio_sel = st.selectbox(
@@ -904,17 +1028,24 @@ with tab4:
             options=["MAPE", "RMSE", "MAE"],
             index=0,
             key="f3_criterio",
+            disabled=modo_rapido,
         )
 
-    forecast_res = ejecutar_pronosticos_cacheados(
-        df_clean=df_clean,
-        ma_window=ma_window,
-        hw_seasonal=hw_seasonal,
-        mlp_lags=mlp_lags,
-        mlp_max_iter=mlp_max_iter,
-        criterio=criterio_sel,
-        exportar_csv=(uploaded_file is None),
-    )
+    if modo_rapido:
+        criterio_sel = "MAPE"  # El CSV oficial se construyó con ese criterio.
+        forecast_res = cargar_pronosticos_guardados(
+            FORECASTS_CSV_PATH.stat().st_mtime, METRICS_CSV_PATH.stat().st_mtime
+        )
+    else:
+        forecast_res = ejecutar_pronosticos_cacheados(
+            df_clean=df_clean,
+            ma_window=ma_window,
+            hw_seasonal=hw_seasonal,
+            mlp_lags=mlp_lags,
+            mlp_max_iter=mlp_max_iter,
+            criterio=criterio_sel,
+            exportar_csv=False,  # Las nuevas configuraciones no sobrescriben el resultado oficial.
+        )
 
     st.markdown("---")
     st.subheader("2. Visor Interactivo por Serie (Producto × Cliente)")
@@ -924,7 +1055,10 @@ with tab4:
     with vs2:
         cli_f3 = st.selectbox("Cliente", options=CLIENTES_ORDENADOS, index=0, key="f3_cli")
 
-    detalle_serie = forecast_res["series_details"][(prod_f3, cli_f3)]
+    detalle_serie = (
+        details_from_saved_metrics(df_clean, forecast_res["df_metrics"], prod_f3, cli_f3)
+        if modo_rapido else forecast_res["series_details"][(prod_f3, cli_f3)]
+    )
     ganador_serie = detalle_serie["winner"]
     with vs3:
         st.metric(
@@ -934,6 +1068,10 @@ with tab4:
         )
 
     st.plotly_chart(plot_series_forecast_comparison(detalle_serie, prod_f3, cli_f3))
+    if modo_rapido:
+        st.caption("Los CSV guardados contienen métricas agregadas del backtest, pero no los "
+                   "seis pronósticos individuales de cada modelo en validación. "
+                   "Para visualizar esas cuatro trayectorias, use el modo de reentrenamiento.")
 
     st.markdown("#### Comparativa de Desempeño en Validación (6 meses) y Pronóstico Nov-2026")
     cols_cards = st.columns(4)
@@ -1248,21 +1386,30 @@ with tab6:
 
     # --------------------------------------------------------------------------
     st.markdown("---")
-    st.subheader("4. Solución Óptima")
+    st.subheader("4. Estado del modelo y plan de costo mínimo")
     st.caption(
-        f"Modelo de programación lineal: {res_opt['n_variables']} variables y {res_opt['n_restricciones']} restricciones · "
-        "Solver: CBC (incluido en PuLP)."
+        f"Modelo de programación lineal: {res_opt['n_variables']} variables y "
+        f"{res_opt['n_restricciones']} restricciones · Solver: COIN-OR CBC "
+        "(instalado mediante el extra `pulp[cbc]`)."
     )
 
     if not res_opt["optimo"]:
-        st.error(
-            f"**Estado del solver: {res_opt['estado']}.** Con los parámetros actuales NO existe un plan que atienda toda "
-            "la demanda respetando las capacidades. No se muestra ninguna solución para no presentar un plan que incumpla restricciones."
-        )
-        st.markdown("**Posibles cuellos de botella detectados:**")
-        for msg in res_opt["diagnostico"]:
+        if res_opt["estado"] == "Solver no disponible":
+            st.error("No se encontró el ejecutable CBC. Compruebe que `pulp[cbc]` "
+                     "esté instalado en el entorno de Streamlit Cloud.")
+        elif res_opt["estado"] == "Error al resolver":
+            st.error("El modelo no pudo construirse o resolverse. Revise el diagnóstico que aparece debajo.")
+        else:
+            st.error(
+                f"**Estado del solver: {res_opt['estado']}.** Con los parámetros actuales NO existe un plan que atienda toda "
+                "la demanda respetando las capacidades. No se muestra ninguna solución para no presentar un plan que incumpla restricciones."
+            )
+        st.markdown("**Diagnóstico del optimizador:**")
+        for msg in res_opt.get("diagnostico", []):
             st.markdown(f"- {msg}")
-        st.info("Ajuste las capacidades en ⚙️ o active **'Permitir faltantes'** para cuantificar la demanda no atendida.")
+        if res_opt["estado"] not in ("Solver no disponible", "Error al resolver"):
+            st.info("Ajuste las capacidades en ⚙️ o active **'Permitir faltantes'** "
+                    "para cuantificar la demanda no atendida.")
     else:
         df_Q_opt, df_X_opt, df_Y_opt, df_S_opt = res_opt["df_Q"], res_opt["df_X"], res_opt["df_Y"], res_opt["df_S"]
         util = res_opt["utilizacion"]
@@ -1271,9 +1418,9 @@ with tab6:
         st.success(f"**Estado del solver: Óptimo.** Costo total mínimo Z = **${res_opt['Z']:,.0f} COP**")
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("Costo Total Mínimo (Z)", f"${res_opt['Z'] / 1e6:,.1f} M", f"${res_opt['Z']:,.0f} COP", delta_color="off")
-        k2.metric("Costo de Producción", f"${res_opt['costo_produccion'] / 1e6:,.1f} M", f"{res_opt['costo_produccion'] / res_opt['Z'] * 100:.1f}% de Z", delta_color="off")
-        k3.metric("Transporte Planta → Nodo", f"${res_opt['costo_transporte'] / 1e6:,.1f} M", f"{res_opt['costo_transporte'] / res_opt['Z'] * 100:.1f}% de Z", delta_color="off")
-        k4.metric("Distribución Nodo → Cliente", f"${res_opt['costo_distribucion'] / 1e6:,.1f} M", f"{res_opt['costo_distribucion'] / res_opt['Z'] * 100:.1f}% de Z", delta_color="off")
+        k2.metric("Costo de Producción", f"${res_opt['costo_produccion'] / 1e6:,.1f} M", f"{res_opt['costo_produccion'] / max(res_opt['Z'], 1) * 100:.1f}% de Z", delta_color="off")
+        k3.metric("Transporte Planta → Nodo", f"${res_opt['costo_transporte'] / 1e6:,.1f} M", f"{res_opt['costo_transporte'] / max(res_opt['Z'], 1) * 100:.1f}% de Z", delta_color="off")
+        k4.metric("Distribución Nodo → Cliente", f"${res_opt['costo_distribucion'] / 1e6:,.1f} M", f"{res_opt['costo_distribucion'] / max(res_opt['Z'], 1) * 100:.1f}% de Z", delta_color="off")
 
         k5, k6, k7, k8 = st.columns(4)
         k5.metric("Unidades Producidas", f"{df_Q_opt['Cantidad'].sum():,.0f} uds")
@@ -1436,21 +1583,34 @@ with tab7:
            if "COP" in c or "uds" in c}
     fmt["Δ Z vs Base (%)"] = st.column_config.NumberColumn(format="%+.1f%%")
     st.dataframe(df_res, hide_index=True, column_config=fmt)
-    st.plotly_chart(plot_costo_escenarios(df_res))
+    if df_res["Costo total Z (COP)"].notna().any():
+        st.plotly_chart(plot_costo_escenarios(df_res))
+    else:
+        st.info("No hay costos verificables: revise el estado y el diagnóstico del optimizador en la Fase 5.")
 
     st.subheader("2. Producción y utilización de plantas")
     df_pl = tabla_plantas(esc)
-    c1, c2 = st.columns(2)
-    c1.plotly_chart(plot_produccion_planta_esc(df_pl))
-    c2.plotly_chart(plot_utilizacion_esc(df_pl, "Planta", "Utilización de plantas por escenario"))
+    if not df_pl.empty:
+        c1, c2 = st.columns(2)
+        c1.plotly_chart(plot_produccion_planta_esc(df_pl))
+        c2.plotly_chart(plot_utilizacion_esc(df_pl, "Planta", "Utilización de plantas por escenario"))
+    else:
+        st.info("Sin producción óptima disponible para graficar.")
 
     st.subheader("3. Utilización de nodos de trasbordo")
-    st.plotly_chart(plot_utilizacion_esc(tabla_nodos(esc), "Nodo", "Utilización de nodos por escenario"))
+    df_nodos_esc = tabla_nodos(esc)
+    if not df_nodos_esc.empty:
+        st.plotly_chart(plot_utilizacion_esc(df_nodos_esc, "Nodo", "Utilización de nodos por escenario"))
+    else:
+        st.info("Sin utilización de nodos calculada.")
 
     st.subheader("4. Distribución a clientes")
     df_cl = tabla_clientes(esc)
-    st.plotly_chart(plot_clientes_esc(df_cl))
-    st.dataframe(df_cl, hide_index=True)
+    if not df_cl.empty:
+        st.plotly_chart(plot_clientes_esc(df_cl))
+        st.dataframe(df_cl, hide_index=True)
+    else:
+        st.info("Sin distribución óptima disponible para graficar.")
 
     st.subheader("5. Restricciones activas (capacidad al 100 %)")
     for n in ["Optimista", "Base", "Pesimista"]:
@@ -1458,5 +1618,214 @@ with tab7:
         st.markdown(f"**{n}:** " + ("; ".join(act) if act else "ninguna, hay holgura."))
 
     st.subheader("6. Lectura de resultados")
-    st.info("Escriba aquí 3–4 conclusiones propias (qué escenario encarece más, qué planta/nodo se satura, "
-            "si aparecen faltantes y qué decisión recomendaría).")
+    for conclusion in conclusiones_escenarios(esc, df_res):
+        st.markdown(f"- {conclusion}")
+    st.caption("Las comparaciones de costo solo son directamente equivalentes cuando los escenarios "
+               "cubren toda la demanda. En caso contrario, Z incluye penalizaciones por faltantes.")
+
+
+# ==============================================================================
+# PESTAÑA INICIAL: FASE 7 — INTEGRACIÓN Y TABLERO EJECUTIVO
+# El contenido se define después de las fases de cálculo, pero aparece al inicio.
+# ==============================================================================
+with tab8:
+    st.header("Fase 7 — Panel integrado de planeación y decisiones")
+    st.caption(
+        "Noviembre de 2026 · Red de 4 plantas, 2 nodos, 5 clientes y 10 productos · "
+        "Los costos y capacidades son supuestos construidos por el grupo, no costos contables observados."
+    )
+
+    # Los controles no dependen de valores presentados en las gráficas.
+    controles_f7 = validar_cadena_datos(df_clean, forecast_res["df_forecasts"], forecast_res["df_metrics"])
+    indicadores_f7 = indicadores_ejecutivos(
+        df_clean, forecast_res["df_forecasts"], forecast_res["df_metrics"], res_opt
+    )
+    atencion_f7 = tabla_demanda_atencion(forecast_res["df_forecasts"], res_opt)
+    controles_fallidos = controles_f7[controles_f7["Estado"] != "Correcto"]
+    if controles_fallidos.empty:
+        st.success("Integración de datos validada: panel histórico y 50 pronósticos consistentes.")
+    else:
+        st.error(
+            f"Se detectaron {len(controles_fallidos)} controles sin aprobar. "
+            "Revise la tabla de calidad antes de usar el plan de producción."
+        )
+
+    st.subheader("1. Indicadores del horizonte de planeación")
+    ek1, ek2, ek3, ek4, ek5 = st.columns(5)
+    ek1.metric("Demanda prevista", f"{indicadores_f7['demanda_pronosticada']:,.0f} uds",
+               f"{indicadores_f7['variacion_vs_ultimo_mes_pct']:+.1f}% vs. oct. 2026")
+    ek2.metric("Series pronosticadas", f"{indicadores_f7['series']} / 50",
+               f"MAPE medio: {indicadores_f7['mape_promedio_pct']:.2f}%")
+    if indicadores_f7["optimo"] and indicadores_f7["restricciones_verificadas"]:
+        etiqueta_z_f7 = "Z (con penalización)" if indicadores_f7["faltante_unidades"] > 0.5 else "Costo del plan, Z"
+        ek3.metric(etiqueta_z_f7, f"${indicadores_f7['costo_cop'] / 1e6:,.1f} M COP")
+        ek4.metric("Demanda cubierta", f"{indicadores_f7['cobertura_pct']:.1f}%")
+        ek5.metric("Faltante", f"{indicadores_f7['faltante_unidades']:,.0f} uds")
+    else:
+        ek3.metric("Costo del plan, Z", "No disponible")
+        ek4.metric("Cobertura", "Sin plan válido")
+        ek5.metric("Estado del modelo", indicadores_f7["estado_optimizacion"])
+        st.warning("No hay una solución óptima y verificada para los parámetros seleccionados. "
+                   "El panel no atribuye entregas ni costos a una solución infactible.")
+
+    st.markdown("#### Ruta de los datos y decisiones")
+    st.markdown(
+        "**1800 observaciones** (Fases 1–2) → "
+        "**50 series y 4 modelos** (Fase 3) → "
+        "**50 modelos ganadores y D_pc** (Fase 4) → "
+        "**producción y trasbordo óptimos, si factibles** (Fase 5) → "
+        "**tres escenarios** (Fase 6) → **indicadores y decisión** (Fase 7)."
+    )
+
+    st.divider()
+    st.subheader("2. Explorador integrado por producto y cliente")
+    fl1, fl2 = st.columns(2)
+    with fl1:
+        filtro_producto_f7 = st.selectbox(
+            "Producto", ["Todos", *PRODUCTOS_ORDENADOS], key="f7_producto"
+        )
+    with fl2:
+        filtro_cliente_f7 = st.selectbox(
+            "Cliente", ["Todos", *CLIENTES_ORDENADOS], key="f7_cliente"
+        )
+
+    def aplicar_filtros_f7(df: pd.DataFrame) -> pd.DataFrame:
+        datos = df.copy()
+        if filtro_producto_f7 != "Todos":
+            datos = datos.loc[datos["Producto"] == filtro_producto_f7]
+        if filtro_cliente_f7 != "Todos":
+            datos = datos.loc[datos["Cliente"] == filtro_cliente_f7]
+        return datos
+
+    hist_f7 = aplicar_filtros_f7(df_clean)
+    pron_f7 = aplicar_filtros_f7(forecast_res["df_forecasts"])
+    atencion_filtrada_f7 = aplicar_filtros_f7(atencion_f7)
+    detalle_f7 = hist_f7.groupby("Fecha", as_index=False)["Demanda"].sum()
+    detalle_f7["Fecha"] = pd.to_datetime(detalle_f7["Fecha"])
+    demanda_filtrada = float(pron_f7["Demanda_Pronosticada_Nov2026"].sum())
+    octubre_filtrado = float(detalle_f7.sort_values("Fecha").iloc[-1]["Demanda"])
+
+    fch1, fch2 = st.columns([1.55, 1.0])
+    with fch1:
+        fig_hist_f7 = px.line(
+            detalle_f7, x="Fecha", y="Demanda", markers=True,
+            title="Evolución histórica de la selección (unidades/mes)",
+            labels={"Fecha": "Mes", "Demanda": "Demanda (uds)"},
+        )
+        fig_hist_f7.update_layout(template="plotly_white", height=360)
+        st.plotly_chart(fig_hist_f7, use_container_width=True)
+    with fch2:
+        df_barras_f7 = pd.DataFrame({
+            "Período": ["Octubre 2026 (observado)", "Noviembre 2026 (pronóstico)"],
+            "Unidades": [octubre_filtrado, demanda_filtrada],
+        })
+        fig_comp_f7 = px.bar(
+            df_barras_f7, x="Período", y="Unidades", text_auto=",.0f",
+            title="Último dato observado frente al pronóstico",
+        )
+        fig_comp_f7.update_layout(template="plotly_white", height=360, showlegend=False)
+        st.plotly_chart(fig_comp_f7, use_container_width=True)
+    st.caption(
+        "Los valores históricos se suman por mes para la selección activa. "
+        "La comparación es descriptiva, no una evaluación del error de noviembre, que todavía no se ha observado."
+    )
+
+    st.markdown("**Detalle del pronóstico y cumplimiento de la selección**")
+    st.dataframe(atencion_filtrada_f7, hide_index=True, height=310,
+                 column_config={
+                     "Demanda pronosticada (uds)": st.column_config.NumberColumn(format="%,.0f"),
+                     "Atendido (uds)": st.column_config.NumberColumn(format="%,.0f"),
+                     "Faltante (uds)": st.column_config.NumberColumn(format="%,.0f"),
+                     "Cobertura (%)": st.column_config.NumberColumn(format="%.1f%%"),
+                     "MAPE (%)": st.column_config.NumberColumn(format="%.2f%%"),
+                 })
+
+    st.divider()
+    st.subheader("3. Conexión entre pronóstico, producción y distribución")
+    if res_opt["optimo"] and indicadores_f7["restricciones_verificadas"]:
+        prod_plan_f7 = res_opt["df_Q"].copy()
+        dist_plan_f7 = res_opt["df_Y"].copy()
+        if filtro_producto_f7 != "Todos":
+            prod_plan_f7 = prod_plan_f7[prod_plan_f7["Producto"] == filtro_producto_f7]
+            dist_plan_f7 = dist_plan_f7[dist_plan_f7["Producto"] == filtro_producto_f7]
+        if filtro_cliente_f7 != "Todos":
+            dist_plan_f7 = dist_plan_f7[dist_plan_f7["Cliente"] == filtro_cliente_f7]
+        pcol, dcol = st.columns(2)
+        with pcol:
+            prod_por_planta_f7 = prod_plan_f7.groupby("Planta", as_index=False)["Cantidad"].sum()
+            fig_prod_f7 = px.bar(
+                prod_por_planta_f7, x="Planta", y="Cantidad", text_auto=",.0f",
+                title="Producción por planta (unidades)"
+            )
+            fig_prod_f7.update_layout(template="plotly_white", height=355)
+            st.plotly_chart(fig_prod_f7, use_container_width=True)
+            st.caption("La producción se decide por producto y planta, no por cliente. "
+                       "El filtro de cliente se aplica únicamente a la distribución.")
+        with dcol:
+            dist_f7 = dist_plan_f7.groupby(["Nodo", "Cliente"], as_index=False)["Cantidad"].sum()
+            fig_dist_f7 = px.bar(
+                dist_f7, x="Cliente", y="Cantidad", color="Nodo", barmode="stack",
+                title="Unidades entregadas por nodo y cliente",
+            )
+            fig_dist_f7.update_layout(template="plotly_white", height=355)
+            st.plotly_chart(fig_dist_f7, use_container_width=True)
+        st.caption("Cantidades resultantes de PuLP con los supuestos vigentes. "
+                   "La red usa variables continuas: las cifras pueden contener fracciones de unidad.")
+    else:
+        st.info("Sin flujos óptimos verificables para representar. "
+                "Ajuste los parámetros en Fase 5 o active explícitamente el análisis con faltantes.")
+
+    st.divider()
+    st.subheader("4. Impacto de los escenarios de demanda")
+    if not df_res.empty:
+        st.dataframe(df_res, hide_index=True, height=175)
+        if "Costo total Z (COP)" in df_res and df_res["Costo total Z (COP)"].notna().any():
+            st.plotly_chart(plot_costo_escenarios(df_res), use_container_width=True)
+        if any(item["con_faltantes"] for item in esc.values()):
+            st.warning("Algunos escenarios son infactibles sin faltantes. "
+                       "Su función objetivo incluye penalizaciones y no representa el costo "
+                       "de atender completamente la demanda.")
+    st.markdown("**Conclusiones basadas en los resultados calculados**")
+    for hallazgo in conclusiones_escenarios(esc, df_res):
+        st.markdown(f"- {hallazgo}")
+
+    st.divider()
+    st.subheader("5. Trazabilidad, calidad y entrega de resultados")
+    st.dataframe(controles_f7, hide_index=True, height=265)
+    st.caption("Los indicadores cambian cuando se ajustan el modelo de pronóstico, "
+               "los parámetros de la red o los datos de origen. Las exportaciones corresponden a esta ejecución.")
+
+    datos_ind_f7 = pd.DataFrame([
+        {"Indicador": "Demanda prevista (uds)", "Valor": indicadores_f7["demanda_pronosticada"]},
+        {"Indicador": "Demanda último mes (uds)", "Valor": indicadores_f7["demanda_ultimo_mes"]},
+        {"Indicador": "Series evaluadas", "Valor": indicadores_f7["series"]},
+        {"Indicador": "MAPE medio ganador (%)", "Valor": indicadores_f7["mape_promedio_pct"]},
+        {"Indicador": "Costo del plan (COP)", "Valor": indicadores_f7["costo_cop"]},
+        {"Indicador": "Cobertura (%)", "Valor": indicadores_f7["cobertura_pct"]},
+        {"Indicador": "Faltante (uds)", "Valor": indicadores_f7["faltante_unidades"]},
+        {"Indicador": "Estado del modelo", "Valor": indicadores_f7["estado_optimizacion"]},
+    ])
+    export_f7 = {
+        "Indicadores": datos_ind_f7,
+        "Controles_calidad": controles_f7,
+        "Historico_filtrado": hist_f7,
+        "Pronosticos_filtrados": pron_f7,
+        "Atencion_filtrada": atencion_filtrada_f7,
+        "Escenarios": df_res,
+        "Metricas_50_series": forecast_res["df_metrics"],
+    }
+    if res_opt["optimo"] and indicadores_f7["restricciones_verificadas"]:
+        export_f7.update({
+            "Produccion_Q": res_opt["df_Q"],
+            "Transbordo_X": res_opt["df_X"],
+            "Distribucion_Y": res_opt["df_Y"],
+            "Validacion_restricciones": res_opt["verificacion"],
+        })
+    st.download_button(
+        "⬇️ Descargar informe integrado de Fase 7 (Excel)",
+        data=convertir_varios_df_a_excel_bytes(export_f7),
+        file_name="fase7_tablero_integrado_nov2026.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        width="stretch",
+    )
