@@ -1,1201 +1,1462 @@
-"""Proyecto de Analítica de Datos — Entregable 5 (Streamlit).
-Reproduce el dataset de modelado y utiliza el transformador del Entregable 4
-para ajustar transformaciones solamente con entrenamiento.
 """
-from pathlib import Path
-import hashlib
+Plataforma Inteligente para la Planeación de la Producción y la Distribución
+mediante Analítica Predictiva y Prescriptiva.
+
+Entrega 1 y 2:
+- Fase 1: Consolidación de Base de Datos Histórica (Panel 10 × 5 × 36 = 1.800)
+- Fase 2: Proceso ETL Auditable y Analítica Descriptiva Interactiva
+- Fase 3: Modelos de Pronóstico (Promedio Móvil, Holt, Holt-Winters, MLP)
+- Fase 4: Evaluación Walk-Forward, Selección Automática y Matriz D_{p,c}
+- Fase 5: Modelo de Optimización (PuLP) de Producción, Trasbordo y Distribución
+"""
+
+from __future__ import annotations
+
 import io
-import numpy as np
+from pathlib import Path
+
 import pandas as pd
-import streamlit as st
 import plotly.express as px
-import plotly.graph_objects as go
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.svm import SVC
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    roc_auc_score, average_precision_score, confusion_matrix,
-    classification_report, roc_curve, precision_recall_curve,
-    r2_score, mean_absolute_error, mean_squared_error,
-)
-from modelo_cuaderno4 import ExtractorPCAKMeans
-from adaptador_datos import normalizar_datos, predictores_disponibles, calcular_segmentos, diagnostico_k, PREFIJOS
+import streamlit as st
 
+from src.descriptive import (
+    get_tabla_clientes,
+    get_tabla_estadistica_series,
+    get_tabla_plantas,
+    get_tabla_productos,
+    plot_barras_apiladas_producto_cliente,
+    plot_boxplots_demanda,
+    plot_comparacion_etl_serie,
+    plot_descomposicion_serie,
+    plot_evolucion_historica,
+    plot_heatmap_estacionalidad,
+    plot_indice_estacional,
+    plot_matriz_abc_xyz,
+    plot_pareto_productos,
+    plot_participacion_clientes_donut,
+    plot_ranking_productos_barras,
+    plot_treemap_planta_producto_cliente,
+)
+from src.etl import (
+    CLIENTES_ORDENADOS,
+    MAPA_PRODUCTO_PLANTA,
+    PLANTAS_OFICIALES,
+    PRODUCTOS_ORDENADOS,
+    run_etl_pipeline,
+)
+from src.forecasting import (
+    MODEL_NAMES,
+    plot_demand_matrix_heatmap,
+    plot_series_forecast_comparison,
+    plot_winner_distribution_donut,
+    run_forecasting_pipeline,
+)
+from src.optimization import (
+    NODOS,
+    SUPUESTOS_DEFAULT,
+    CAP_NODO_DEFAULT,
+    TABLA_SUPUESTOS,
+    UBICACION_CLIENTES,
+    UBICACION_NODOS,
+    construir_parametros,
+    plot_composicion_costos,
+    plot_produccion_por_planta,
+    plot_sankey_red,
+    plot_utilizacion,
+    resolver_modelo,
+    tablas_parametros,
+)
+from src.scenarios import (
+    correr_escenarios, restricciones_activas, tabla_resumen, tabla_plantas, tabla_nodos,
+    tabla_clientes, plot_costo_escenarios, plot_produccion_planta_esc, plot_utilizacion_esc, plot_clientes_esc,
+)
+
+# ==============================================================================
+# Configuración general de la página y estilos
+# ==============================================================================
 st.set_page_config(
-    page_title='Analítica vial | Proyecto integrador',
-    page_icon='📊',
-    layout='wide',
+    page_title="Plataforma Predictiva y Prescriptiva - Fases 1 a 6",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
-BASE = Path(__file__).parent
-RANDOM_STATE = 42
 
-# Se conservan las variables originales cuando están disponibles.
-# En CSV crudos/intermedios se usan únicamente los predictores observados.
-COLUMNAS_REG = [
-    'edad', 'sexo', 'politraumatismo', 'referido_a_otra_ips',
-    'tipo_de_vehiculo', 'relacion_usuario_accidente', 'ips',
-    'tipo_administradora', 'patologia_principal', 'region_principal',
-    'mes_sin', 'mes_cos', 'dia_semana_sin', 'dia_semana_cos',
-]
-COLUMNAS_CLF = [c for c in COLUMNAS_REG if c != 'politraumatismo']
-
-
-# ── Funciones de carga con caché ───────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def cargar_default():
-    return pd.read_csv(BASE / 'data' / 'df_modelado.csv')
-
-
-@st.cache_data(show_spinner=False)
-def cargar_clusters():
-    return pd.read_csv(BASE / 'data' / 'df_segmentado_clusters.csv')
-
-
-@st.cache_data(show_spinner=False)
-def cargar_base_ejemplo(nombre):
-    rutas = {
-        'Modelado oficial (28.276)': 'df_modelado.csv',
-        'Base cruda original (34.306)': 'BBDDcruda_original.csv',
-        'Base limpia intermedia (18.058)': 'BBDDlimpia.csv',
-    }
-    return pd.read_csv(BASE / 'data' / rutas[nombre], low_memory=False)
-
-
-@st.cache_data(show_spinner=False)
-def calcular_segmentos_cache(data):
-    return calcular_segmentos(data)
-
-
-@st.cache_data(show_spinner=False)
-def diagnostico_k_cache(data):
-    return diagnostico_k(data)
-
-
-# ── Función de entrenamiento y evaluación ─────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def evaluar_modelo(data, objetivo, modelo, profundidad):
-    """Reentrenamiento reproducible en la base suministrada.
-    PCA/cluster nunca se leen de la exportación del Entregable 3.
+st.markdown(
     """
-    pref = predictores_disponibles(data)
-    columnas_base = ['edad', 'sexo', 'referido_a_otra_ips'] + list(pref)
-    original = data.copy()
-    original['edad'] = pd.to_numeric(original['edad'], errors='coerce')
-    original = original.loc[original['edad'].notna() & original['politraumatismo'].isin(['si', 'no'])].copy()
-    if objetivo == 'Costos':
-        if 'costos' not in original.columns:
-            raise ValueError('Para regresión falta la columna costos.')
-        original['costos'] = pd.to_numeric(original['costos'], errors='coerce')
-        original = original.loc[original['costos'].gt(0)].copy()
-    if len(original) < 30:
-        raise ValueError('No hay suficientes registros válidos para entrenar este modelo.')
-
-    # La clasificación no exige un costo válido: evita excluir automáticamente
-    # pacientes con costos nulos/cero si su respuesta binaria sí se conoce.
-    y_clf = original['politraumatismo'].eq('si').astype(int)
-    if y_clf.nunique() < 2 or y_clf.value_counts().min() < 2:
-        raise ValueError('Se requieren al menos dos casos de cada clase de politraumatismo.')
-
-    # Separación estratificada 80/20, semilla fija.
-    ix_train, ix_test = train_test_split(
-        np.arange(len(original)),
-        test_size=0.20,
-        stratify=y_clf.values,
-        random_state=RANDOM_STATE,
-    )
-
-    # ── Regresión de costos ────────────────────────────────────────────────────
-    if objetivo == 'Costos':
-        y = np.log10(original['costos'].values)
-        datos = original[columnas_base + ['politraumatismo']]
-        configuracion = {
-            'include_politrauma': True,
-            'pref_dict': pref,
-            'var_threshold': None if modelo == 'PCA completo + lineal' else 0.80,
-        }
-        pipe = Pipeline([
-            ('pre', ExtractorPCAKMeans(**configuracion)),
-            ('modelo', LinearRegression()),
-        ])
-        pipe.fit(datos.iloc[ix_train], y[ix_train])
-        preditr = pipe.predict(datos.iloc[ix_train])
-        predite = pipe.predict(datos.iloc[ix_test])
-        # Factor corrector calculado SOLO con entrenamiento (Duan smearing).
-        smearing = float(np.mean(np.power(10.0, y[ix_train] - preditr)))
-        costo_pred = np.power(10.0, predite) * smearing
-        return {
-            'objetivo': objetivo, 'modelo': modelo,
-            'y_test': y[ix_test], 'pred_log': predite,
-            'costo_real': original['costos'].values[ix_test],
-            'costo_predicho': costo_pred,
-            'indices': original.index.to_numpy()[ix_test],
-            'entrenamiento': len(ix_train), 'prueba': len(ix_test),
-            'n_pc': pipe.named_steps['pre'].n_pcs_,
-            'var_exp': pipe.named_steps['pre'].var_explicada_,
-            'muestreo_svm': False, 'variables_modelo': columnas_base + ['politraumatismo'],
-        }
-
-    # ── Clasificación de politraumatismo ──────────────────────────────────────
-    datos = original[columnas_base]
-    y = y_clf.values
-    subset_train = ix_train
-
-    if modelo == 'Regresión logística equilibrada':
-        estimator = LogisticRegression(
-            class_weight='balanced', max_iter=1200, random_state=RANDOM_STATE
-        )
-    elif modelo == 'Regresión logística sin balanceo':
-        estimator = LogisticRegression(max_iter=1200, random_state=RANDOM_STATE)
-    elif modelo == 'Árbol de decisión':
-        estimator = DecisionTreeClassifier(
-            max_depth=profundidad, min_samples_leaf=25,
-            class_weight='balanced', random_state=RANDOM_STATE,
-        )
-    elif modelo == 'Random Forest':
-        estimator = RandomForestClassifier(
-            n_estimators=120, max_depth=12, min_samples_leaf=15,
-            class_weight='balanced', n_jobs=-1, random_state=RANDOM_STATE,
-        )
-    elif modelo == 'SVM RBF (submuestra)':
-        # Reducción explícita y reproducible; el conjunto de prueba no cambia.
-        if len(ix_train) > 8000:
-            local_ix, _ = train_test_split(
-                ix_train, train_size=8000,
-                stratify=y[ix_train], random_state=RANDOM_STATE,
-            )
-            subset_train = local_ix
-        estimator = SVC(
-            kernel='rbf', C=1.0, class_weight='balanced',
-            probability=True, random_state=RANDOM_STATE,
-        )
-    else:
-        raise ValueError('Modelo desconocido: ' + modelo)
-
-    pipe = Pipeline([
-        ('pre', ExtractorPCAKMeans(include_politrauma=False, var_threshold=0.80, pref_dict=pref)),
-        ('modelo', estimator),
-    ])
-    pipe.fit(datos.iloc[subset_train], y[subset_train])
-    prob = pipe.predict_proba(datos.iloc[ix_test])[:, 1]
-    return {
-        'objetivo': objetivo, 'modelo': modelo, 'probabilidades': prob,
-        'y_test': y[ix_test], 'indices': original.index.to_numpy()[ix_test],
-        'entrenamiento': len(subset_train), 'prueba': len(ix_test),
-        'n_pc': pipe.named_steps['pre'].n_pcs_,
-        'var_exp': pipe.named_steps['pre'].var_explicada_,
-        'muestreo_svm': len(subset_train) != len(ix_train), 'variables_modelo': columnas_base,
+    <style>
+    .main-banner {
+        background: linear-gradient(135deg, #0f4c81 0%, #1b7895 100%);
+        color: white;
+        padding: 1.25rem 1.6rem;
+        border-radius: 12px;
+        margin-bottom: 1rem;
     }
+    .main-banner h1 {
+        margin: 0;
+        font-size: 1.55rem;
+        font-weight: 700;
+        color: #ffffff;
+    }
+    .main-banner p {
+        margin: 0.35rem 0 0 0;
+        font-size: 0.95rem;
+        color: #e6f2f8;
+    }
+    .section-card {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-left: 4px solid #0f4c81;
+        border-radius: 8px;
+        padding: 0.9rem 1.1rem;
+        margin-bottom: 0.85rem;
+    }
+    div[data-testid="stMetric"] {
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 0.75rem 0.9rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+RAW_DEFAULT_PATH = Path("demanda_historica_cruda.csv")
+CLEAN_CSV_PATH = Path("data/demanda_limpia_1800.csv")
+AUDIT_JSON_PATH = Path("data/auditoria_etl.json")
+FORECASTS_CSV_PATH = Path("data/pronosticos_nov2026.csv")
+METRICS_CSV_PATH = Path("data/metricas_modelos_50series.csv")
 
 
-# ── Sidebar ────────────────────────────────────────────────────────────────────
-st.sidebar.title('Analítica de Datos')
-st.sidebar.caption('Accidentalidad vial y costos hospitalarios · Bucaramanga')
-menu = st.sidebar.radio('Navegación', [
-    'Inicio', 'Carga y calidad', 'Análisis exploratorio', 'PCA y K-means',
-    'Regresión de costos', 'Clasificación', 'Reproducibilidad',
-])
-st.sidebar.divider()
-base_activa = st.sidebar.selectbox('Base de datos incluida', [
-    'Modelado oficial (28.276)',
-    'Base cruda original (34.306)',
-    'Base limpia intermedia (18.058)',
-])
-archivo = st.sidebar.file_uploader('O cargar un CSV propio (prioritario)', type=['csv'])
-
-try:
-    if archivo is not None:
-        contenido = archivo.getvalue()
-        if not contenido:
-            raise ValueError('El archivo CSV está vacío.')
-        # Detecta los dos delimitadores habituales sin alterar los datos de origen.
-        linea = contenido.splitlines()[0].decode('utf-8-sig', errors='replace')
-        sep = ';' if linea.count(';') > linea.count(',') else ','
-        crudo = pd.read_csv(io.BytesIO(contenido), sep=sep, low_memory=False)
-        procedencia = archivo.name
-        archivo_personalizado = True
-        firma_datos = hashlib.sha256(contenido).hexdigest()[:16]
-    else:
-        crudo = cargar_base_ejemplo(base_activa)
-        procedencia = base_activa
-        archivo_personalizado = base_activa != 'Modelado oficial (28.276)'
-        firma_datos = 'ejemplo_' + hashlib.sha256(base_activa.encode()).hexdigest()[:16]
-    if crudo.empty or len(crudo.columns) < 3:
-        raise ValueError('El CSV está vacío o no tiene suficientes columnas. Comprueba el delimitador.')
-    df, notas_esquema, esquema = normalizar_datos(crudo)
-except Exception as exc:
-    st.sidebar.error(f'No se pudo preparar el archivo: {exc}')
-    st.stop()
-
-st.sidebar.caption(f'Archivo: {procedencia} · Esquema: {esquema}')
-with st.sidebar.expander('Compatibilidad y variables ausentes'):
-    if notas_esquema:
-        for nota in notas_esquema:
-            st.write('• ' + nota)
-    else:
-        st.write('Variables del esquema de modelado oficial disponibles.')
-
-st.sidebar.caption(f'Archivo activo: {len(df):,} filas × {len(df.columns)} columnas')
+@st.cache_data(show_spinner="Ejecutando pipeline ETL auditable...")
+def ejecutar_etl_oficial(file_mtime: float) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Ejecuta el ETL sobre el archivo oficial del proyecto y cachea por timestamp."""
+    _ = file_mtime
+    return run_etl_pipeline(
+        raw_source=RAW_DEFAULT_PATH,
+        output_csv_path=CLEAN_CSV_PATH,
+        audit_json_path=AUDIT_JSON_PATH,
+    )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# INICIO
-# ══════════════════════════════════════════════════════════════════════════════
-if menu == 'Inicio':
-    st.title('Accidentalidad vial y costos de atención hospitalaria')
+@st.cache_data(show_spinner="Entrenando y validando los 4 modelos en las 50 series...")
+def ejecutar_pronosticos_cacheados(
+    df_clean: pd.DataFrame,
+    ma_window: int,
+    hw_seasonal: str,
+    mlp_lags: int,
+    mlp_max_iter: int,
+    criterio: str,
+    exportar_csv: bool,
+) -> dict:
+    """Entrena las 50 series con validación walk-forward y cachea por hiperparámetros."""
+    return run_forecasting_pipeline(
+        df_clean=df_clean,
+        ma_window=ma_window,
+        hw_seasonal=hw_seasonal,
+        mlp_lags=mlp_lags,
+        mlp_max_iter=mlp_max_iter,
+        criterio=criterio,
+        output_forecasts_path=FORECASTS_CSV_PATH if exportar_csv else None,
+        output_metrics_path=METRICS_CSV_PATH if exportar_csv else None,
+    )
+
+
+def convertir_df_a_excel_bytes(df: pd.DataFrame, sheet_name: str = "Datos") -> bytes:
+    """Genera un archivo Excel en memoria listo para descargar con openpyxl."""
+    buffer = io.BytesIO()
+    df_export = df.copy()
+    if "Fecha" in df_export.columns and pd.api.types.is_datetime64_any_dtype(df_export["Fecha"]):
+        df_export["Fecha"] = df_export["Fecha"].dt.strftime("%Y-%m-%d")
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_export.to_excel(writer, index=False, sheet_name=sheet_name)
+    return buffer.getvalue()
+
+
+def convertir_df_a_csv_bytes(df: pd.DataFrame) -> bytes:
+    """Genera bytes UTF-8 CSV con fechas en formato YYYY-MM-DD."""
+    df_export = df.copy()
+    if "Fecha" in df_export.columns and pd.api.types.is_datetime64_any_dtype(df_export["Fecha"]):
+        df_export["Fecha"] = df_export["Fecha"].dt.strftime("%Y-%m-%d")
+    return df_export.to_csv(index=False).encode("utf-8")
+
+
+def convertir_varios_df_a_excel_bytes(hojas: dict[str, pd.DataFrame]) -> bytes:
+    """Genera un Excel en memoria con una hoja por DataFrame (nombres ≤ 31 caracteres)."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for nombre, df in hojas.items():
+            df.to_excel(writer, index=not isinstance(df.index, pd.RangeIndex), sheet_name=nombre[:31])
+    return buffer.getvalue()
+
+
+@st.cache_data(show_spinner="Resolviendo el modelo de optimización con PuLP (CBC)...")
+def resolver_optimizacion_cacheada(
+    df_forecasts: pd.DataFrame,
+    df_clean: pd.DataFrame,
+    supuestos_items: tuple,
+    cap_nodo_items: tuple,
+    factor_demanda: float,
+    permitir_faltantes: bool,
+) -> dict:
+    """Construye parámetros y resuelve el modelo de Fase 5; se cachea por supuestos y demanda."""
+    par = construir_parametros(
+        df_forecasts=df_forecasts,
+        df_clean=df_clean,
+        supuestos=dict(supuestos_items),
+        factor_demanda=factor_demanda,
+        cap_nodo=dict(cap_nodo_items),
+    )
+    return resolver_modelo(par, permitir_faltantes=permitir_faltantes)
+
+
+@st.cache_data(show_spinner="Resolviendo los 3 escenarios con PuLP (CBC)...")
+def correr_escenarios_cacheado(df_forecasts, df_clean, supuestos_items, cap_nodo_items):
+    return correr_escenarios(df_forecasts, df_clean, dict(supuestos_items), dict(cap_nodo_items))
+
+
+# ==============================================================================
+# Barra lateral: Carga de datos y estado de la arquitectura
+# ==============================================================================
+with st.sidebar:
+    st.markdown("### 🏭 Control de Datos y ETL")
+    fuente_opcion = st.radio(
+        "Origen de datos crudos",
+        options=[
+            "Archivo oficial (demanda_historica_cruda.csv)",
+            "Cargar otro archivo CSV / Excel",
+        ],
+        index=0,
+    )
+
+    uploaded_file = None
+    if fuente_opcion == "Cargar otro archivo CSV / Excel":
+        uploaded_file = st.file_uploader(
+            "Subir archivo crudo",
+            type=["csv", "xlsx", "xls"],
+            help="El archivo debe contener las columnas: Fecha, Producto, Cliente, Demanda, Planta, Precio.",
+        )
+
+    if st.button("🔄 Recalcular ETL y Exportar CSV/JSON", width="stretch"):
+        st.cache_data.clear()
+
+    st.divider()
+    st.markdown("### 🗺️ Red Logística del Proyecto")
     st.markdown(
-        '**Proyecto integrador de Analítica de Datos.** '
-        'Herramienta exploratoria de apoyo al análisis operativo de datos '
-        'hospitalarios históricos — Bucaramanga. Los resultados se calculan para la base activa.'
+        """
+        - **Plantas (4):** Bogotá, Medellín, Cali, Bucaramanga
+        - **Nodos Trasbordo (2):** Nodo Norte, Nodo Centro
+        - **Productos (10):** P1 – P10
+        - **Clientes (5):** Cliente 1 – Cliente 5
+        - **Horizonte:** 36 meses (`2023-11` a `2026-10`)
+        - **Panel Final:** `10 × 5 × 36 = 1.800`
+        """
     )
 
-    if not {'costos', 'politraumatismo'}.issubset(df.columns):
-        st.warning('El CSV cargado no contiene las variables de los indicadores principales.')
+# Carga y ejecución del ETL
+if uploaded_file is not None:
+    if uploaded_file.name.lower().endswith((".xlsx", ".xls")):
+        df_uploaded = pd.read_excel(uploaded_file)
     else:
-        # KPIs principales
-        col_a, col_b, col_c, col_d, col_e = st.columns(5)
-        col_a.metric('Total atenciones', f'{len(df):,}')
-        col_b.metric('Costo mediano', f"${df['costos'].median():,.0f} COP")
-        col_c.metric('Costo promedio', f"${df['costos'].mean():,.0f} COP")
-        col_d.metric(
-            'Politraumatismo',
-            f"{df['politraumatismo'].astype(str).str.lower().eq('si').mean()*100:.1f} %",
-        )
-        col_e.metric(
-            'IPS distintas',
-            str(df['ips'].nunique()) if 'ips' in df.columns else '—',
-        )
-
-        st.markdown('---')
-
-        # Gráficos de resumen
-        col_left, col_right = st.columns(2)
-        with col_left:
-            if 'ano' in df.columns:
-                conteo_ano = (
-                    df.groupby('ano').size()
-                    .reset_index(name='Atenciones')
-                )
-                conteo_ano['ano_str'] = conteo_ano['ano'].astype(str)
-                fig_ano = px.bar(
-                    conteo_ano, x='ano_str', y='Atenciones',
-                    title='Atenciones registradas por año',
-                    labels={'ano_str': 'Año', 'Atenciones': 'Número de atenciones'},
-                )
-                fig_ano.update_traces(marker_color='#2563EB')
-                fig_ano.update_layout(
-                    showlegend=False,
-                    xaxis=dict(type='category', title='Año'),
-                    yaxis=dict(title='Número de atenciones'),
-                )
-                st.plotly_chart(fig_ano, use_container_width=True)
-
-        with col_right:
-            corte_p99 = df['costos'].quantile(0.99)
-            costos_viz = df.loc[df['costos'] <= corte_p99, 'costos']
-            fig_cos = px.histogram(
-                costos_viz, nbins=50,
-                title='Distribución de costos (hasta percentil 99)',
-                labels={'value': 'Costo (COP)', 'count': 'Frecuencia'},
-            )
-            fig_cos.update_traces(marker_color='#2563EB')
-            fig_cos.update_layout(
-                showlegend=False,
-                xaxis_title='Costo (COP)',
-                yaxis_title='Frecuencia',
-            )
-            st.plotly_chart(fig_cos, use_container_width=True)
-
-        # Prevalencia de politraumatismo por año
-        if 'ano' in df.columns:
-            st.markdown('#### Prevalencia de politraumatismo por año')
-            es_politrauma = (
-                df['politraumatismo'].astype(str).str.lower().eq('si').astype(float)
-            )
-            prev_ano = (
-                df.assign(_pt=es_politrauma)
-                .groupby('ano')['_pt']
-                .mean()
-                .mul(100)
-                .round(2)
-                .reset_index(name='Prevalencia (%)')
-            )
-            prev_ano['ano_str'] = prev_ano['ano'].astype(str)
-            fig_prev = px.line(
-                prev_ano, x='ano_str', y='Prevalencia (%)',
-                markers=True,
-                title='Prevalencia de politraumatismo por año',
-                labels={'ano_str': 'Año', 'Prevalencia (%)': 'Prevalencia (%)'},
-            )
-            fig_prev.update_traces(line_color='#059669', marker_color='#059669')
-            fig_prev.update_layout(
-                xaxis=dict(type='category', title='Año'),
-                yaxis=dict(title='Prevalencia (%)', ticksuffix='%'),
-            )
-            st.plotly_chart(fig_prev, use_container_width=True)
-
-    st.markdown('---')
-    col_info, col_uso = st.columns(2)
-    with col_info:
-        st.info(
-            '**Metodología:** auditoría y EDA → PCA y segmentación → '
-            'modelos supervisados → evaluación y decisiones. '
-            'Las asociaciones no prueban causalidad.'
-        )
-    with col_uso:
-        st.success(
-            '**Cómo usar la aplicación:** use el menú lateral para cargar CSV, '
-            'explorar variables, revisar los segmentos del Entregable 3 y '
-            'entrenar modelos del Entregable 4 con partición fija 80/20.'
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CARGA Y CALIDAD
-# ══════════════════════════════════════════════════════════════════════════════
-elif menu == 'Carga y calidad':
-    st.title('Carga y calidad de datos')
-    st.caption('Los valores mostrados se calculan sobre el archivo seleccionado.')
-
-    # Validación anticipada de columnas esenciales
-    faltantes_esenciales = [c for c in ['costos', 'edad', 'politraumatismo'] if c not in df.columns]
-    if faltantes_esenciales:
-        st.error(
-            f'El archivo no contiene columnas esenciales: '
-            f'**{", ".join(faltantes_esenciales)}**. '
-            'Carga un CSV compatible con la metodología del proyecto.'
-        )
-
-    a, b, c, d = st.columns(4)
-    a.metric('Filas', f'{len(df):,}')
-    b.metric('Variables', str(len(df.columns)))
-    c.metric('Duplicados exactos', f'{df.duplicated().sum():,}')
-    d.metric('Nulos explícitos', f'{int(df.isna().sum().sum()):,}')
-
-    st.subheader('Primeras 10 filas')
-    st.dataframe(df.head(10), use_container_width=True)
-
-    st.subheader('Información general del DataFrame (equivalente a df.info())')
-    info_buffer = io.StringIO()
-    df.info(buf=info_buffer, verbose=True, show_counts=True, memory_usage='deep')
-    st.code(info_buffer.getvalue(), language='text')
-
-    st.subheader('Resumen de las columnas')
-    resumen = pd.DataFrame({
-        'variable': df.columns,
-        'tipo': df.dtypes.astype(str).values,
-        'nulos': df.isna().sum().values,
-        'porcentaje_nulos': (df.isna().mean() * 100).round(2).values,
-        'valores_distintos': [df[c].nunique() for c in df.columns],
-    })
-    st.dataframe(resumen, use_container_width=True, hide_index=True)
-
-    st.subheader('Faltantes encubiertos')
-    cat_cols = df.select_dtypes(include=['object', 'string']).columns
-    encub = pd.DataFrame([{
-        'variable': v,
-        'sin_informacion_o_no_especificada_%': round(
-            df[v].astype(str).isin(['sin_informacion', 'no_especificada']).mean() * 100, 2
-        ),
-    } for v in cat_cols])
-    st.dataframe(
-        encub.sort_values('sin_informacion_o_no_especificada_%', ascending=False),
-        use_container_width=True, hide_index=True,
+        df_uploaded = pd.read_csv(uploaded_file)
+    df_clean, df_pre_interp, audit = run_etl_pipeline(
+        raw_source=df_uploaded,
+        output_csv_path=None,
+        audit_json_path=None,
     )
-    st.download_button(
-        'Descargar auditoría CSV',
-        resumen.to_csv(index=False).encode('utf-8-sig'),
-        'auditoria_variables.csv', 'text/csv',
-    )
-    st.warning(
-        'Que dos filas sean idénticas no demuestra que sean episodios duplicados; '
-        'no se eliminan automáticamente.'
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ANÁLISIS EXPLORATORIO
-# ══════════════════════════════════════════════════════════════════════════════
-elif menu == 'Análisis exploratorio':
-    st.title('Análisis exploratorio (EDA)')
-    num = df.select_dtypes(include=np.number).columns.tolist()
-    cat = df.select_dtypes(include=['object', 'string']).columns.tolist()
-
-    # ── Filtros dinámicos ──────────────────────────────────────────────────────
-    st.subheader('Filtros')
-    fcol1, fcol2, fcol3 = st.columns(3)
-    df_filtrado = df.copy()
-
-    with fcol1:
-        if 'ano' in df.columns:
-            anos_disponibles = sorted(df['ano'].unique())
-            anos_sel = st.multiselect('Año', anos_disponibles, default=list(anos_disponibles))
-            if anos_sel:
-                df_filtrado = df_filtrado[df_filtrado['ano'].isin(anos_sel)]
-
-    with fcol2:
-        if 'tipo_de_vehiculo' in df.columns:
-            vehiculos = sorted(df['tipo_de_vehiculo'].dropna().unique())
-            veh_sel = st.multiselect('Tipo de vehículo', vehiculos, default=list(vehiculos))
-            if veh_sel:
-                df_filtrado = df_filtrado[df_filtrado['tipo_de_vehiculo'].isin(veh_sel)]
-
-    with fcol3:
-        if 'relacion_usuario_accidente' in df.columns:
-            roles = sorted(df['relacion_usuario_accidente'].dropna().unique())
-            rol_sel = st.multiselect('Rol del usuario', roles, default=list(roles))
-            if rol_sel:
-                df_filtrado = df_filtrado[df_filtrado['relacion_usuario_accidente'].isin(rol_sel)]
-
-    st.caption(f'Registros tras filtros: **{len(df_filtrado):,}** de {len(df):,}')
-    st.markdown('---')
-
-    # ── Estadísticas descriptivas ──────────────────────────────────────────────
-    st.subheader('Estadísticas descriptivas')
-    num_f = df_filtrado.select_dtypes(include=np.number).columns.tolist()
-    if num_f:
-        st.dataframe(df_filtrado[num_f].describe().T, use_container_width=True)
-
-    izq, der = st.columns(2)
-    with izq:
-        if num_f:
-            v = st.selectbox(
-                'Variable numérica', num_f,
-                index=num_f.index('costos') if 'costos' in num_f else 0,
-            )
-            graf = df_filtrado[[v]].dropna()
-            if v == 'costos':
-                corte = graf[v].quantile(.99)
-                st.caption(
-                    'Para visualizar mejor los costos se muestran valores '
-                    'hasta el percentil 99; los datos originales no se recortan.'
-                )
-                graf = graf[graf[v] <= corte]
-            fig_hist = px.histogram(
-                graf, x=v, nbins=42, title='Distribución de ' + v,
-                labels={'count': 'Frecuencia', v: v},
-            )
-            fig_hist.update_layout(yaxis_title='Frecuencia', xaxis_title=v)
-            st.plotly_chart(fig_hist, use_container_width=True)
-
-    with der:
-        cat_f = df_filtrado.select_dtypes(include=['object', 'string']).columns.tolist()
-        if cat_f:
-            v_cat = st.selectbox(
-                'Variable categórica', cat_f,
-                index=cat_f.index('tipo_de_vehiculo') if 'tipo_de_vehiculo' in cat_f else 0,
-            )
-            conteos = (
-                df_filtrado[v_cat].value_counts(dropna=False)
-                .head(15).rename_axis(v_cat).reset_index(name='registros')
-            )
-            fig_bar = px.bar(
-                conteos, x='registros', y=v_cat, orientation='h',
-                title='Frecuencias de ' + v_cat,
-                labels={'registros': 'Número de registros', v_cat: v_cat},
-            )
-            fig_bar.update_layout(xaxis_title='Número de registros', yaxis_title=v_cat)
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-    # ── Matriz de correlaciones ────────────────────────────────────────────────
-    if len(num_f) > 1:
-        st.subheader('Matriz de correlaciones numéricas (Spearman)')
-        vs = st.multiselect(
-            'Variables de la matriz', num_f,
-            default=[c for c in ['edad', 'costos', 'log_costos', 'ano', 'mes_numeric'] if c in num_f],
-        )
-        if len(vs) >= 2:
-            cor = df_filtrado[vs].corr(method='spearman')
-            grafico_corr = st.radio(
-                'Visualización de correlaciones',
-                ['Interactiva (Plotly)', 'Mapa de calor (Seaborn)'],
-                horizontal=True,
-            )
-            if grafico_corr == 'Mapa de calor (Seaborn)':
-                fig_cor, ax_cor = plt.subplots(figsize=(max(6, len(vs)*1.1), max(4, len(vs)*0.85)))
-                sns.heatmap(cor, annot=True, fmt='.2f', cmap='RdBu_r', vmin=-1, vmax=1,
-                            square=True, ax=ax_cor)
-                ax_cor.set_title('Correlaciones de Spearman (Seaborn)')
-                fig_cor.tight_layout()
-                st.pyplot(fig_cor)
-                plt.close(fig_cor)
-            else:
-                st.plotly_chart(
-                    px.imshow(cor, text_auto='.2f', aspect='auto', zmin=-1, zmax=1,
-                              color_continuous_scale='RdBu_r'),
-                    use_container_width=True,
-                )
-
-    # ── Costos por IPS ─────────────────────────────────────────────────────────
-    if {'ips', 'costos'}.issubset(df_filtrado.columns):
-        st.subheader('Costos por IPS')
-        comp = (
-            df_filtrado.groupby('ips', dropna=False)
-            .agg(casos=('costos', 'size'), mediana=('costos', 'median'))
-            .reset_index()
-        )
-        st.dataframe(comp, use_container_width=True, hide_index=True)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PCA Y K-MEANS
-# ══════════════════════════════════════════════════════════════════════════════
-elif menu == 'PCA y K-means':
-    st.title('PCA y K-means: segmentación de la base activa')
-    st.caption('Los componentes y clústeres se calculan para la base elegida, nunca se trasladan de otro archivo.')
-
-    oficial = not archivo_personalizado
-    if oficial:
-        try:
-            seg = cargar_clusters()
-            from json import loads
-            ruta_diag = BASE / 'resultados_pca_kmeans.json'
-            diag_pca = loads(ruta_diag.read_text(encoding='utf-8')) if ruta_diag.exists() else None
-            n_pca = diag_pca['n_pca_80'] if diag_pca else 11
-            var_retenida = diag_pca['varianza_retenida'] if diag_pca else .8109
-            st.caption('Resultados descriptivos precalculados del Entregable 3 sobre el dataset oficial.')
-        except FileNotFoundError:
-            oficial = False
-            st.warning('No se encontró la exportación oficial. Se recalculará la segmentación.')
-    if not oficial:
-        st.info('Se realizará un nuevo PCA y K-means (k=3) únicamente con las variables disponibles en este archivo. '
-                'La muestra y la especificación pueden diferir del Entregable 3; los resultados no son directamente comparables.')
-        try:
-            with st.spinner('Calculando PCA y K-means de la base activa...'):
-                analisis = calcular_segmentos_cache(df)
-            seg = analisis['segmentos']
-            n_pca = analisis['n_pca_80']
-            var_retenida = analisis['varianza_retenida']
-            diag_pca = None
-        except Exception as exc:
-            st.error(f'No fue posible segmentar esta base: {exc}')
-            st.stop()
-
-    a,b,c,d = st.columns(4)
-    a.metric('Registros segmentados', f'{len(seg):,}')
-    b.metric('Grupos', str(seg['cluster'].nunique()))
-    c.metric('Componentes retenidos', str(n_pca))
-    d.metric('Varianza explicada', f'{var_retenida*100:.2f} %')
-    st.warning('El PCA descriptivo puede incluir costos y politraumatismo. Sus componentes '
-               'no se reutilizan como predictores supervisados de esos mismos resultados.')
-
-    with st.expander('PCA: varianza explicada, cargas y selección de k', expanded=False):
-        st.markdown('**PCA:** resume la variación mediante componentes ortogonales. '
-                    '**K-means:** agrupa según distancias a centroides. Se usa k=3 para '
-                    'permitir comparar perfiles, sin afirmar que sean categorías naturales.')
-        if oficial and diag_pca:
-            componentes = pd.DataFrame(diag_pca['variacion_componentes'])
-            st.plotly_chart(px.line(componentes, x='componente', y='acumulada_pct', markers=True,
-                labels={'componente':'Número de componentes','acumulada_pct':'Varianza acumulada (%)'},
-                title='Varianza acumulada (dataset oficial)'), use_container_width=True)
-            nombres = diag_pca['cargas_6']['variables']
-            carga = pd.DataFrame(diag_pca['cargas_6']['componentes'], index=nombres)
-            seleccion = pd.DataFrame(diag_pca['seleccion_k'])
-        else:
-            componentes = pd.DataFrame({'Componente': np.arange(1, len(analisis['varianza_acumulada'])+1),
-                          'Varianza acumulada (%)': np.array(analisis['varianza_acumulada'])*100})
-            st.plotly_chart(px.line(componentes, x='Componente', y='Varianza acumulada (%)', markers=True,
-                title='Varianza acumulada (base seleccionada)'), use_container_width=True)
-            carga = analisis['cargas']
-            with st.spinner('Evaluando k=2 a 6 sobre una muestra (hasta 3.500 registros)...'):
-                seleccion = diagnostico_k_cache(analisis)
-            st.caption('Elbow y Silhouette son diagnósticos exploratorios calculados sobre una muestra reproducible; '
-                       'los clústeres finales se ajustan con todas las filas válidas.')
-        filas_carga = []
-        for col in carga.columns[:min(3,len(carga.columns))]:
-            for v in carga[col].abs().nlargest(4).index:
-                filas_carga.append({'Componente':str(col), 'Variable':str(v), 'Carga':float(carga.loc[v,col])})
-        st.dataframe(pd.DataFrame(filas_carga), use_container_width=True, hide_index=True)
-        i,d = st.columns(2)
-        with i:
-            st.plotly_chart(px.line(seleccion, x='k', y='inercia', markers=True,
-                title='Elbow: inercia según k'), use_container_width=True)
-        with d:
-            st.plotly_chart(px.line(seleccion, x='k', y='silhouette', markers=True,
-                title='Silhouette según k'), use_container_width=True)
-        st.dataframe(seleccion, use_container_width=True, hide_index=True)
-
-    caps = (seg.groupby('cluster').agg(
-        Registros=('edad', 'size'), Edad_mediana=('edad', 'median'),
-        Costo_mediano_COP=('costos', 'median'), Costo_medio_COP=('costos', 'mean'),
-        Politraumatismo_pct=('politraumatismo',lambda x:100*x.astype(str).str.lower().eq('si').mean()),
-        Moto_pct=('tipo_de_vehiculo',lambda x:100*x.astype(str).eq('moto').mean()),
-    ).round(2).reset_index())
-    st.subheader('Perfiles de los tres clústeres')
-    st.dataframe(caps, use_container_width=True, hide_index=True)
-    max_puntos = min(12000, len(seg))
-    if max_puntos > 500:
-        n = st.slider('Puntos visibles en PC1 vs PC2', 500, max_puntos,
-                      min(5000,max_puntos), 500)
-    else:
-        n = max_puntos
-    mostrar = seg.sample(min(n,len(seg)), random_state=42).copy()
-    mostrar['cluster'] = mostrar['cluster'].astype(str)
-    st.plotly_chart(px.scatter(mostrar, x='PC1', y='PC2', color='cluster', opacity=.5,
-        hover_data=['edad','costos','politraumatismo'],
-        title='Proyección de clústeres en PC1 y PC2'), use_container_width=True)
-    st.plotly_chart(px.bar(caps, x='cluster', y='Costo_mediano_COP',
-        title='Costo mediano por clúster'),use_container_width=True)
-    st.download_button('Descargar segmentos CSV',seg.to_csv(index=False).encode('utf-8-sig'),
-        f'segmentos_{"oficial" if oficial else "base_activa"}.csv','text/csv')
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# REGRESIÓN DE COSTOS / CLASIFICACIÓN
-# ══════════════════════════════════════════════════════════════════════════════
-elif menu in ['Regresión de costos', 'Clasificación']:
-    objetivo = 'Costos' if menu == 'Regresión de costos' else 'Politraumatismo'
-    st.title('Regresión de costos' if objetivo == 'Costos' else 'Clasificación de politraumatismo')
-
-    try:
-        pref_activo = predictores_disponibles(df)
-        if objetivo == 'Costos' and 'costos' not in df.columns:
-            raise ValueError('Falta la variable objetivo costos.')
-    except ValueError as exc:
-        st.error(str(exc))
+    fuente_activa = f"Archivo cargado: {uploaded_file.name}"
+else:
+    if not RAW_DEFAULT_PATH.exists():
+        st.error(f"No se encontró el archivo fuente `{RAW_DEFAULT_PATH}` en la raíz del proyecto.")
         st.stop()
-    st.caption('Predictores categóricos disponibles para esta base: ' + ', '.join(pref_activo))
-    if archivo_personalizado:
-        st.warning('Se entrenará una especificación adaptada a las columnas reales de esta base. '
-                   'No se incorporan predictores faltantes ni se comparan directamente sus métricas '
-                   'con las del modelo oficial de 28.276 registros.')
+    mtime = RAW_DEFAULT_PATH.stat().st_mtime
+    df_clean, df_pre_interp, audit = ejecutar_etl_oficial(mtime)
+    fuente_activa = f"Oficial: `{RAW_DEFAULT_PATH.name}` → Exportado en `{CLEAN_CSV_PATH.as_posix()}`"
 
-    st.caption(
-        'Separación estratificada 80/20 (semilla 42). '
-        'El escalado, PCA y K-means se reajustan sobre entrenamiento '
-        'y se aplican después a prueba.'
+with st.sidebar:
+    st.divider()
+    st.success(
+        f"**Panel Balanceado Listo**\n\n"
+        f"- Observaciones: **{audit['registros_limpios_finales']:,}**\n"
+        f"- Series: **{audit['series_unicas']}** × **{audit['meses_continuos']}** meses\n"
+        f"- Nulos restantes: **{sum(audit['nulos_finales'].values())}**"
     )
-
-    if objetivo == 'Costos':
-        modelo = st.selectbox('Seleccionar especificación', ['PCA 80 % + lineal', 'PCA completo + lineal'])
-        profundidad = 5
-        st.info(
-            'Respuesta continua: log₁₀(costos COP). '
-            'Se muestra también error retransformado a COP con '
-            'corrección de Duan, estimada sobre entrenamiento.'
-        )
-    else:
-        modelo = st.selectbox('Seleccionar algoritmo', [
-            'Regresión logística equilibrada',
-            'Regresión logística sin balanceo',
-            'Árbol de decisión',
-            'Random Forest',
-            'SVM RBF (submuestra)',
-        ])
-        profundidad = (
-            st.slider('Profundidad máxima del árbol', 1, 15, 5)
-            if modelo == 'Árbol de decisión'
-            else 5
-        )
-        st.info(
-            'Clase positiva: politraumatismo = sí. '
-            'La prevalencia es minoritaria; evaluar accuracy sola puede inducir a error.'
-        )
-
-    explicaciones = {
-        'PCA 80 % + lineal': (
-            'Se reducen los predictores a componentes PCA que explican al menos el 80 % de la varianza '
-            'de entrenamiento. Una regresión lineal estima log₁₀(costos) como combinación de esos componentes. '
-            'La retransformación mediante Duan permite reportar también errores en pesos.'
-        ),
-        'PCA completo + lineal': (
-            'Conserva todos los componentes PCA del preprocesamiento y ajusta una regresión lineal '
-            'sobre log₁₀(costos). Sirve para contrastar la pérdida de información de la versión reducida; '
-            'su mayor R² logarítmico no implica necesariamente menor RMSE en COP.'
-        ),
-        'Regresión logística equilibrada': (
-            'Modela la probabilidad de politraumatismo mediante una función logística. '
-            'Asigna mayor peso a la clase minoritaria durante el ajuste para atender el desbalance; '
-            'esta decisión puede aumentar el recall a costa de falsas alarmas.'
-        ),
-        'Regresión logística sin balanceo': (
-            'Estima probabilidades usando regresión logística, sin ponderar las clases. '
-            'Al haber pocos positivos, puede priorizar la clase mayoritaria; se compara para evaluar '
-            'el efecto del balanceo sobre precision, recall y F1.'
-        ),
-        'Árbol de decisión': (
-            'Construye reglas de clasificación dividiendo sucesivamente los registros para disminuir '
-            'la impureza Gini. La profundidad máxima y el mínimo de observaciones por hoja '
-            'limitan la complejidad y ayudan a controlar el sobreajuste.'
-        ),
-        'Random Forest': (
-            'Combina 120 árboles entrenados con muestras y subconjuntos aleatorios de variables. '
-            'Promedia sus estimaciones de probabilidad y suele reducir la variabilidad de un único árbol. '
-            'Sus resultados no demuestran por sí solos disponibilidad o causalidad de los predictores.'
-        ),
-        'SVM RBF (submuestra)': (
-            'Busca una frontera que separe ambas clases en un espacio no lineal utilizando un kernel radial (RBF). '
-            'El entrenamiento usa como máximo 8.000 registros estratificados para controlar el coste computacional; '
-            'las probabilidades se calculan mediante el ajuste probabilístico interno de SVC.'
-        ),
-    }
-    with st.expander('¿Cómo funciona este algoritmo y qué limitaciones tiene?', expanded=False):
-        st.write(explicaciones[modelo])
-        st.caption('El preprocesamiento se ajusta sobre entrenamiento. Las métricas se calculan sobre prueba; '
-                   'son resultados descriptivos del modelo, no recomendaciones médicas automáticas.')
-
-    # Cada resultado se asocia al contenido exacto del archivo, modelo y parámetros.
-    cache_key = (firma_datos, objetivo, modelo, profundidad)
-    if 'resultados_modelos' not in st.session_state:
-        st.session_state['resultados_modelos'] = {}
-
-    if st.button('Entrenar y evaluar sobre el 20 % de prueba', type='primary'):
-        with st.spinner('Ajustando preprocesamiento y modelo sobre los datos de entrenamiento...'):
-            try:
-                st.session_state['resultados_modelos'][cache_key] = evaluar_modelo(
-                    df, objetivo, modelo, profundidad
-                )
-            except Exception as exc:
-                st.error(f'No fue posible entrenar el modelo.\nDetalle del error: {exc}')
-                st.stop()
-
-    r = st.session_state['resultados_modelos'].get(cache_key)
-    if r is None:
-        st.info(
-            'Pulsa «Entrenar y evaluar sobre el 20 % de prueba» para calcular métricas verificables de este modelo en vivo. '
-            'No se muestran resultados inventados.'
-        )
-    else:
-        # ── Resultados de regresión ────────────────────────────────────────────────
-        if objetivo == 'Costos':
-            x1, x2, x3, x4 = st.columns(4)
-            x1.metric('Train', f"{r['entrenamiento']:,}")
-            x2.metric('Test', f"{r['prueba']:,}")
-            x3.metric('Componentes PCA', str(r['n_pc']))
-            x4.metric('Varianza PCA', f"{r['var_exp']*100:.1f} %")
-
-            real = r['costo_real']
-            pred = r['costo_predicho']
-            mae_log  = mean_absolute_error(r['y_test'], r['pred_log'])
-            rmse_log = float(np.sqrt(mean_squared_error(r['y_test'], r['pred_log'])))
-            r2       = r2_score(r['y_test'], r['pred_log'])
-            r2_cop   = r2_score(real, pred)
-            mae_cop  = mean_absolute_error(real, pred)
-            rmse_cop = float(np.sqrt(mean_squared_error(real, pred)))
-
-            met1, met2, met3, met4 = st.columns(4)
-            met1.metric('R² en test · log₁₀', f'{r2:.3f}')
-            met2.metric('R² en test · COP', f'{r2_cop:.3f}')
-            met3.metric('MAE en test (COP)', f'${mae_cop:,.0f}')
-            met4.metric('RMSE en test (COP)', f'${rmse_cop:,.0f}')
-            st.caption(
-                f'Escala log₁₀: MAE = {mae_log:.3f} | RMSE = {rmse_log:.3f}. '
-                'El R² logarítmico y el R² en COP miden comportamientos distintos; '
-                'un R² en COP negativo indica peor ajuste cuadrático que predecir '
-                'el costo medio del conjunto de prueba.'
-            )
-
-            # ── Explicación del R² y limitaciones predictivas ──────────────────────
-            with st.expander('📊 Evaluación del R² y limitaciones predictivas'):
-                if modelo == 'PCA 80 % + lineal':
-                    st.markdown(f"""
-**Especificación activa:** PCA con corte al 80 % de varianza ($m={r['n_pc']}$ componentes) + Regresión Lineal.  
-**Métrica calculada en test:** **R² = {r2:.4f}** (explica únicamente el **{r2*100:.2f} %** de la varianza de $\\log_{{10}}(\\text{{costos}})$).
-
-#### ¿Qué limita el rendimiento en esta especificación?
-1. **Posible pérdida de información predictiva:** Retener componentes por varianza explicada no garantiza preservar las combinaciones más útiles para predecir costos. Para atribuir el cambio a componentes específicos harían falta análisis adicionales.
-2. **Limitaciones predictivas críticas (no es adecuado para uso individual):**
-   - El modelo deja el **{(1 - r2)*100:.1f} %** de la varianza sin explicar.
-   - Con un MAE de **${mae_cop:,.0f} COP** y un RMSE de **${rmse_cop:,.0f} COP**, las predicciones individuales sufren discrepancias de cientos de miles o millones de pesos.
-   - **Causa estructural en los datos:** Las variables disponibles al ingreso (edad, vehículo, aseguradora, IPS) no incluyen factores determinantes del gasto hospitalario (días en UCI, cirugías, material de osteosíntesis, medicamentos especiales).
-   - Por ello, este bajo R² representa una limitación predictiva sustancial y no debe considerarse un desempeño satisfactorio para tarificación ni presupuestación médica.
-
-#### Comparativa entre escalas logarítmica y pesos colombianos (COP)
-| Métrica | Escala $\\log_{{10}}$ | Escala COP (con corrección de Duan) |
-|---|---|---|
-| **R² en test** | {r2:.4f} | {r2_cop:.4f} |
-| **MAE** | {mae_log:.4f} unidades log | ${mae_cop:,.0f} COP |
-| **RMSE** | {rmse_log:.4f} unidades log | ${rmse_cop:,.0f} COP |
-
-- **Escala $\\log_{{10}}$:** Estabiliza la asimetría y el error relativo, pero atenúa la visibilidad de los desvíos monetarios reales.
-- **Escala COP:** Refleja el impacto financiero directo. Aplica el factor de corrección de sesgo no lineal de Duan (*smearing*), calculado exclusivamente en entrenamiento para evitar fuga de información.
-""")
-                else:
-                    st.markdown(f"""
-**Especificación activa:** PCA completo ($m={r['n_pc']}$ componentes sin descarte) + Regresión Lineal.  
-**Métrica calculada en test:** **R² = {r2:.4f}** (explica el **{r2*100:.2f} %** de la varianza de $\\log_{{10}}(\\text{{costos}})$).
-
-#### Comparación con la especificación del 80%:
-- Esta especificación retiene {r['n_pc']} componentes. Su **R² log₁₀ = {r2:.4f}** y su **R² en COP = {r2_cop:.4f}** deben contrastarse con los de la especificación PCA 80 % evaluada sobre exactamente la misma partición.
-- En escala logarítmica, **el {(1 - r2)*100:.1f} % de la variación queda sin explicar**; esto no implica el mismo porcentaje en pesos.
-- **Limitaciones predictivas:** A pesar de la ganancia respecto a la versión del 80 %, el error medio absoluto sigue siendo de **${mae_cop:,.0f} COP** y el RMSE de **${rmse_cop:,.0f} COP**. Esto confirma que las variables sociodemográficas y de transporte no alcanzan para modelar con precisión los costos clínicos individuales.
-
-#### Comparativa entre escalas logarítmica y pesos colombianos (COP)
-| Métrica | Escala $\\log_{{10}}$ | Escala COP (con corrección de Duan) |
-|---|---|---|
-| **R² en test** | {r2:.4f} | {r2_cop:.4f} |
-| **MAE** | {mae_log:.4f} unidades log | ${mae_cop:,.0f} COP |
-| **RMSE** | {rmse_log:.4f} unidades log | ${rmse_cop:,.0f} COP |
-""")
-
-            st.plotly_chart(
-                px.scatter(
-                    pd.DataFrame({'Costo real (COP)': real, 'Costo estimado (COP)': pred})
-                    .sample(min(2500, len(real)), random_state=42),
-                    x='Costo real (COP)', y='Costo estimado (COP)', opacity=.45,
-                    title='Costo real y costo estimado (submuestra visual)',
-                ),
-                use_container_width=True,
-            )
-
-            export = pd.DataFrame({
-                'indice_original': r['indices'],
-                'costo_real_COP': real,
-                'costo_estimado_COP': pred,
-                'log_costo_estimado': r['pred_log'],
-            })
-            metricas_df = pd.DataFrame([{
-                'modelo': modelo,
-                'r2_test_log10': round(r2, 6),
-                'r2_test_COP': round(r2_cop, 6),
-                'mae_log10': round(mae_log, 6),
-                'rmse_log10': round(rmse_log, 6),
-                'mae_COP': round(mae_cop, 2),
-                'rmse_COP': round(rmse_cop, 2),
-                'n_train': r['entrenamiento'],
-                'n_test': r['prueba'],
-                'n_pca': r['n_pc'],
-                'var_exp_pca': round(r['var_exp'], 6),
-            }])
-            col_dl1, col_dl2 = st.columns(2)
-            col_dl1.download_button(
-                '⬇ Descargar predicciones CSV',
-                export.to_csv(index=False).encode('utf-8-sig'),
-                'predicciones_costos.csv', 'text/csv',
-            )
-            col_dl2.download_button(
-                '⬇ Descargar métricas CSV',
-                metricas_df.to_csv(index=False).encode('utf-8-sig'),
-                'metricas_regresion.csv', 'text/csv',
-            )
-
-        # ── Resultados de clasificación ────────────────────────────────────────────
-        else:
-            y    = np.asarray(r['y_test'])
-            prob = np.asarray(r['probabilidades'])
-
-            # ── 2. Resultados del modelo seleccionado (5 métricas clave) ──────────
-            st.subheader('Resultados del modelo seleccionado')
-            umbral_activo = float(st.session_state.get('umbral_clasificacion', 0.50))
-            pred = (prob >= umbral_activo).astype(int)
-
-            col_a, col_b, col_c, col_d, col_e = st.columns(5)
-            col_a.metric('ROC-AUC', f'{roc_auc_score(y, prob):.3f}')
-            col_b.metric('Average Precision (AP)', f'{average_precision_score(y, prob):.3f}')
-            col_c.metric('Precision', f'{precision_score(y, pred, zero_division=0):.3f}')
-            col_d.metric('Recall', f'{recall_score(y, pred, zero_division=0):.3f}')
-            col_e.metric('F1-Score', f'{f1_score(y, pred, zero_division=0):.3f}')
-            st.caption(
-                f'Accuracy: {accuracy_score(y, pred):.3f} | '
-                f'Train: {r["entrenamiento"]:,} | Test: {r["prueba"]:,} | '
-                f'Componentes PCA: {r["n_pc"]} ({r["var_exp"]*100:.1f} % varianza acumulada) | '
-                f'Casos positivos en test: {sum(y):,} ({100*np.mean(y):.2f} %)'
-            )
-            if r['muestreo_svm']:
-                st.warning(
-                    'El SVM usa una submuestra estratificada de hasta 8.000 registros de '
-                    'entrenamiento para limitar recursos en Community Cloud. '
-                    'Evalúa el mismo conjunto de prueba que otros modelos, pero no ha '
-                    'usado el mismo tamaño de entrenamiento.'
-                )
-
-            # ── 3. Matriz de confusión con etiquetas claras ────────────────────────
-            st.subheader('Matriz de confusión')
-            umbral = st.slider(
-                'Umbral de decisión (análisis de sensibilidad en test)',
-                0.05, 0.95, umbral_activo, 0.05,
-                key='umbral_clasificacion',
-            )
-            pred = (prob >= umbral).astype(int)
-            cm_mat = confusion_matrix(y, pred, labels=[0, 1])
-            tn, fp, fn, tp = cm_mat.ravel()
-
-            fig_cm = px.imshow(
-                cm_mat, text_auto=True, color_continuous_scale='Blues',
-                labels={'x': 'Predicción del modelo', 'y': 'Valor real observado', 'color': 'Casos'},
-                x=['No politraumatismo (0)', 'Politraumatismo (1)'],
-                y=['No politraumatismo (0)', 'Politraumatismo (1)'],
-                title=f'Matriz de confusión (umbral = {umbral:.2f})',
-            )
-            fig_cm.update_layout(xaxis_title='Predicción del modelo', yaxis_title='Valor real observado')
-            st.plotly_chart(fig_cm, use_container_width=True)
-            st.caption(
-                f'Verdaderos negativos (TN): {tn:,} | Falsos positivos (FP): {fp:,} | '
-                f'Falsos negativos (FN): {fn:,} | Verdaderos positivos (TP): {tp:,}. '
-                f'Coste ponderado **hipotético** (5×FN + 1×FP) = {5*fn+fp:,} unidades arbitrarias; '
-                'los pesos 5 y 1 son supuestos didácticos, no costos asistenciales reales.'
-            )
-
-            # ── 4. Curvas ROC y Precision–Recall ───────────────────────────────────
-            st.subheader('Curvas ROC y Precision–Recall')
-            col_roc, col_pr = st.columns(2)
-            with col_roc:
-                fpr, tpr, _ = roc_curve(y, prob)
-                fig_roc = go.Figure()
-                fig_roc.add_scatter(
-                    x=fpr, y=tpr, name=f'Modelo (AUC {roc_auc_score(y, prob):.3f})',
-                    line=dict(color='#2563EB', width=2),
-                )
-                fig_roc.add_scatter(
-                    x=[0, 1], y=[0, 1], line={'dash': 'dash', 'color': 'gray'}, name='Azar (AUC 0,50)'
-                )
-                fig_roc.update_layout(
-                    title='Curva ROC',
-                    xaxis_title='Tasa de Falsos Positivos (FPR)',
-                    yaxis_title='Tasa de Verdaderos Positivos (TPR)',
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-                )
-                st.plotly_chart(fig_roc, use_container_width=True)
-
-            with col_pr:
-                pr_vals, rec_vals, _ = precision_recall_curve(y, prob)
-                fig_pr = go.Figure()
-                fig_pr.add_scatter(
-                    x=rec_vals, y=pr_vals, name=f'Modelo (AP {average_precision_score(y, prob):.3f})',
-                    line=dict(color='#059669', width=2),
-                )
-                fig_pr.add_hline(
-                    y=np.mean(y), line_dash='dash', line_color='gray',
-                    annotation_text=f'Prevalencia base ({np.mean(y)*100:.1f} %)',
-                )
-                fig_pr.update_layout(
-                    title='Curva Precision–Recall',
-                    xaxis_title='Recall (Sensibilidad)',
-                    yaxis_title='Precision (Valor Predictivo Positivo)',
-                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
-                )
-                st.plotly_chart(fig_pr, use_container_width=True)
-
-            # Notas metodológicas sobre AP y umbrales clínicos
-            with st.expander('ℹ️ Notas metodológicas sobre métricas de clasificación y umbral'):
-                st.markdown(f"""
-#### 1. Average Precision (AP) y Área Trapezoidal son medidas distintas
-- La métrica reportada es **Average Precision (AP = {average_precision_score(y, prob):.4f})**, obtenida mediante `average_precision_score`. Representa la suma ponderada de precisiones al corte de cada variación en recall:
-  $$\\text{{AP}} = \\sum_n (R_n - R_{{n-1}}) P_n$$
-- **Diferencia técnica fundamental:** AP aproxima la integral exacta de la curva escalonada sin asumir linealidad entre puntos adyacentes. En contraste, el área calculada mediante la regla trapezoidal clásica (`auc(recall, precision)`) presupone conexiones rectas entre pares $(R, P)$, lo que puede producir un valor distinto al de AP. Ambas medidas responden a reglas de integración diferentes y deben identificarse por separado.
-
-#### 2. Umbral de decisión (0,50) y advertencia sobre umbrales clínicos
-- El umbral estándar de **0,50** es una referencia algorítmica para la comparación. **No demuestra que los costos de falsos positivos y falsos negativos sean iguales**, ni garantiza una decisión óptima sin probabilidades calibradas y costos estimados.
-- **Asimetría de costos:** En urgencias y trauma vial, las consecuencias de un Falso Negativo (no clasificar a un paciente politraumatizado grave) difieren sustancialmente de un Falso Positivo (evaluación diagnóstica preventiva).
-- **Advertencia metodológica:** El umbral de 0,50 **no ha sido optimizado con matrices de costo operativo real ni validado clínicamente**. En un entorno asistencial real, la selección de cualquier umbral operativo requiere una validación clínica prospectiva formal y un análisis institucional de costo-efectividad; no deben adoptarse umbrales empíricos sin dicha validación.
-""")
-
-            # ── 5. Tabla de métricas detalladas y botones de descarga ─────────────
-            st.subheader('Tabla de métricas detalladas y descargas')
-            informe = classification_report(y, pred, labels=[0, 1], output_dict=True, zero_division=0)
-            st.dataframe(pd.DataFrame(informe).T, use_container_width=True)
-            st.warning(
-                'Cambiar el umbral conociendo los resultados de prueba NO equivale a validarlo. '
-                'El umbral definitivo debe elegirse con validación sobre entrenamiento, '
-                'por costos reales y revisión clínica.'
-            )
-
-            export = pd.DataFrame({
-                'indice_original': r['indices'],
-                'politraumatismo_real': y,
-                'probabilidad_modelo': prob,
-                'clasificacion_predicha': pred,
-            })
-            metricas_df = pd.DataFrame([{
-                'modelo': modelo, 'umbral': umbral,
-                'accuracy':  round(accuracy_score(y, pred), 6),
-                'precision': round(precision_score(y, pred, zero_division=0), 6),
-                'recall':    round(recall_score(y, pred, zero_division=0), 6),
-                'f1':        round(f1_score(y, pred, zero_division=0), 6),
-                'roc_auc':   round(roc_auc_score(y, prob), 6),
-                'average_precision_ap': round(average_precision_score(y, prob), 6),
-                'tn': int(tn), 'fp': int(fp), 'fn': int(fn), 'tp': int(tp),
-                'n_train': r['entrenamiento'], 'n_test': r['prueba'],
-                'n_pca': r['n_pc'], 'var_exp_pca': round(r['var_exp'], 6),
-            }])
-            col_dl1, col_dl2 = st.columns(2)
-            col_dl1.download_button(
-                '⬇ Descargar predicciones CSV',
-                export.to_csv(index=False).encode('utf-8-sig'),
-                'predicciones_politraumatismo.csv', 'text/csv',
-            )
-            col_dl2.download_button(
-                '⬇ Descargar métricas CSV',
-                metricas_df.to_csv(index=False).encode('utf-8-sig'),
-                'metricas_clasificacion.csv', 'text/csv',
-            )
-
-        # ── Comparación longitudinal de modelos ejecutados en la sesión ────────────
-        resumenes = []
-        for (firma, obj, nombre, prof), resultado in st.session_state['resultados_modelos'].items():
-            if firma != firma_datos or obj != objetivo:
-                continue
-            if obj == 'Costos':
-                resumenes.append({
-                    'Modelo': nombre,
-                    'Train': resultado['entrenamiento'],
-                    'Test': resultado['prueba'],
-                    'R² log₁₀': round(r2_score(resultado['y_test'], resultado['pred_log']), 4),
-                    'R² COP': round(r2_score(resultado['costo_real'], resultado['costo_predicho']), 4),
-                    'MAE COP': round(mean_absolute_error(resultado['costo_real'], resultado['costo_predicho'])),
-                    'RMSE COP': round(np.sqrt(mean_squared_error(resultado['costo_real'], resultado['costo_predicho']))),
-                })
-            else:
-                yy  = np.asarray(resultado['y_test'])
-                pp  = np.asarray(resultado['probabilidades'])
-                clas = (pp >= 0.50).astype(int)
-                resumenes.append({
-                    'Modelo': nombre + (f' · profundidad {prof}' if nombre == 'Árbol de decisión' else ''),
-                    'Train': resultado['entrenamiento'],
-                    'Test': resultado['prueba'],
-                    'ROC-AUC': round(roc_auc_score(yy, pp), 4),
-                    'Average Precision (AP)': round(average_precision_score(yy, pp), 4),
-                    'Recall (umbral 0,5)': round(recall_score(yy, clas, zero_division=0), 4),
-                    'F1 (umbral 0,5)':     round(f1_score(yy, clas, zero_division=0), 4),
-                })
-
-        if len(resumenes) > 1:
-            st.subheader('Comparación de modelos ejecutados en esta sesión')
-            st.caption(
-                'Resultados sobre la misma partición de prueba (semilla 42). '
-                'Para clasificación se usa un umbral común de 0,50 en esta tabla. '
-                'El SVM usa menos filas de entrenamiento.'
-            )
-            resumen_comp = pd.DataFrame(resumenes)
-            st.dataframe(resumen_comp, use_container_width=True, hide_index=True)
-            st.download_button(
-                '⬇ Descargar comparación de modelos CSV',
-                resumen_comp.to_csv(index=False).encode('utf-8-sig'),
-                f'comparacion_modelos_{"costos" if objetivo == "Costos" else "clasificacion"}.csv',
-                'text/csv',
-            )
-
-    # ── 6. Sección desplegable: Análisis de sensibilidad y posible fuga de información ──
-    if objetivo == 'Politraumatismo':
-        if not archivo_personalizado:
-            st.markdown('---')
-            with st.expander('Análisis de sensibilidad y posible fuga de información', expanded=(r is None)):
-                st.caption(
-                    'Evaluación de sensibilidad experimental comparando los clasificadores originales '
-                    '(13 variables, incluyendo patología principal y región principal) frente a una versión reducida '
-                    '(11 variables, excluyendo ambas variables diagnósticas). '
-                    'Resultados sobre el dataset oficial de modelado (28.276 registros, semilla 42, partición 80/20).'
-                )
-
-                path_exp = BASE / 'fase2_experimento_comparativo_completo.csv'
-                if path_exp.exists():
-                    df_exp = pd.read_csv(path_exp)
-
-                    # Gráficos comparativos
-                    col_g1, col_g2 = st.columns(2)
-                    with col_g1:
-                        fig_roc_comp = px.bar(
-                            df_exp, x='modelo', y='roc_auc', color='variante',
-                            barmode='group',
-                            title='Comparación ROC-AUC (Original vs. Reducido)',
-                            labels={'roc_auc': 'ROC-AUC', 'modelo': 'Modelo', 'variante': 'Especificación'},
-                            color_discrete_map={
-                                'Original (con patología y región)': '#2563EB',
-                                'Reducido (sin patología ni región)': '#DC2626',
-                            },
-                        )
-                        fig_roc_comp.add_hline(y=0.50, line_dash='dash', line_color='gray', annotation_text='Azar (0,50)')
-                        fig_roc_comp.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
-                        st.plotly_chart(fig_roc_comp, use_container_width=True)
-
-                    with col_g2:
-                        fig_ap_comp = px.bar(
-                            df_exp, x='modelo', y='pr_auc', color='variante',
-                            barmode='group',
-                            title='Comparación Average Precision (AP)',
-                            labels={'pr_auc': 'Average Precision (AP)', 'modelo': 'Modelo', 'variante': 'Especificación'},
-                            color_discrete_map={
-                                'Original (con patología y región)': '#2563EB',
-                                'Reducido (sin patología ni región)': '#DC2626',
-                            },
-                        )
-                        fig_ap_comp.add_hline(y=0.1034, line_dash='dash', line_color='gray', annotation_text='Prevalencia base (10,3 %)')
-                        fig_ap_comp.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
-                        st.plotly_chart(fig_ap_comp, use_container_width=True)
-
-                    # Tabla detallada de métricas y matrices de confusión
-                    st.markdown('##### Métricas detalladas y matrices de confusión (umbral 0,50)')
-                    cols_mostrar = [
-                        'modelo', 'variante', 'roc_auc', 'pr_auc',
-                        'precision', 'recall', 'f1', 'tn', 'fp', 'fn', 'tp'
-                    ]
-                    df_mostrar = df_exp[cols_mostrar].copy()
-                    df_mostrar['matriz_confusion_[TN,FP,FN,TP]'] = df_mostrar.apply(
-                        lambda row: f"[{int(row['tn'])}, {int(row['fp'])}, {int(row['fn'])}, {int(row['tp'])}]", axis=1
-                    )
-                    df_mostrar = df_mostrar.drop(columns=['tn', 'fp', 'fn', 'tp'])
-                    df_mostrar.columns = [
-                        'Modelo', 'Variante', 'ROC-AUC', 'Average Precision (AP)',
-                        'Precision', 'Recall', 'F1-Score', 'Matriz Confusión [TN, FP, FN, TP]'
-                    ]
-                    st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
-
-                    # Explicación del impacto y advertencia metodológica
-                    st.info(
-                        '**Impacto de excluir `patologia_principal` y `region_principal`:**\n'
-                        '- **ROC-AUC:** Cae de ~0,96 a ~0,62 (pérdida de más de 33 puntos de capacidad discriminativa).\n'
-                        '- **Average Precision (AP):** Se reduce de ~0,70 a ~0,14 (muy cercano a la línea base aleatoria del 10,34 % de prevalencia).\n'
-                        '- **Falsos positivos:** Se multiplican significativamente (en Random Forest pasan de 328 a 2.711 falsos positivos a umbral 0,50).\n\n'
-                        '**Aclaración metodológica sobre fuga temporal:** Estos resultados son retrospectivos. La caída en el rendimiento por sí sola '
-                        '**no demuestra matemáticamente fuga temporal**; lo que la sustenta es la verificación del flujo clínico y operativo: en el momento '
-                        'previsto de predicción temprana (triaje en urgencias o en vía pública), el diagnóstico codificado (CIE-10) y la región anatómica confirmada '
-                        '**aún no han sido determinados**. Incluirlas en un modelo predictivo temprano contamina el análisis con información retrospectiva del egreso.'
-                    )
-
-                    # Botón de descarga CSV
-                    st.download_button(
-                        '⬇ Descargar experimento completo de sensibilidad en CSV',
-                        path_exp.read_bytes(),
-                        'fase2_experimento_comparativo_completo.csv',
-                        'text/csv',
-                    )
-
-    st.caption(
-        'Los algoritmos se utilizan como ejercicios de análisis retrospectivo. '
-        'No se recomienda su uso para decisiones médicas o triaje automático '
-        'sin validación externa.'
-    )
+    st.caption(fuente_activa)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# REPRODUCIBILIDAD
-# ══════════════════════════════════════════════════════════════════════════════
-elif menu == 'Reproducibilidad':
-    st.title('Reproducibilidad y limitaciones')
-    st.write(
-        'El archivo `requirements.txt` documenta bibliotecas; '
-        '`modelo_cuaderno4.py` integra el transformador de la metodología del grupo; '
-        'la fuente del modelado se mantiene sin modificar.'
-    )
-    st.code(
-        'python -m venv .venv\n'
-        '.venv\\Scripts\\activate\n'
-        'pip install -r requirements.txt\n'
-        'streamlit run app.py',
-        language='bash',
-    )
-    st.write(
-        '**Parámetros fijos:** 80 % entrenamiento; 20 % prueba; estratificación binaria; '
-        'semilla 42; PCA 80 % salvo modelo completo; K-means k=3. '
-        'SVM usa hasta 8.000 filas de train.'
-    )
-    st.write(
-        '**Advertencias:** no usar `PC1`, `PC2`, `cluster` del archivo exportado como '
-        'predictores para objetivos con fuga de información; verificar disponibilidad '
-        'temporal de diagnósticos; no eliminar duplicados sin comprender la unidad de atención.'
-    )
-    st.write(
-        '**Despliegue y privacidad:** El equipo indicó que los CSV incluidos son muestras ficticias '
-        'para demostración académica. Esa condición no ha sido verificada de manera independiente; '
-        'confirma procedencia, licencia y ausencia de datos personales antes de compartir el repositorio. '
-        'Si se emplean datos reales, se requieren autorización y controles de privacidad.'
-    )
+# ==============================================================================
+# Encabezado principal
+# ==============================================================================
+st.markdown(
+    """
+    <div class="main-banner">
+        <h1>Plataforma Inteligente para la Planeación de la Producción y la Distribución</h1>
+        <p>Analítica Predictiva y Prescriptiva · Fases 1–2 (ETL y Descriptiva) , Fases 3–4 (Pronósticos, Validación Walk-Forward y Selección Automática) y Fase 5 (Optimización con PuLP)</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    [
+        "📦 Fase 1: Base Consolidada (10×5×36)",
+        "🛠️ Fase 2A: Auditoría del Proceso ETL",
+        "📊 Fase 2B: Analítica Descriptiva",
+        "🤖 Fase 3: Modelos de Pronóstico",
+        "🏆 Fase 4: Evaluación y Matriz D_{p,c}",
+        "🧮 Fase 5: Optimización (PuLP)",
+        "🎯 Fase 6: Escenarios",
+    ]
+)
+
+# ==============================================================================
+# PESTAÑA 1: FASE 1 — BASE DE DATOS CONSOLIDADA
+# ==============================================================================
+with tab1:
+    st.subheader("1. Arquitectura Dimensional del Panel Histórico")
     st.markdown(
-        '**Fuente del proyecto:** Ficha comparativa E1; entregables 1–4; '
-        'bases de datos provistas por el equipo.'
+        """
+        <div class="section-card">
+        <b>Diseño del panel balanceado:</b> La base histórica consolida la demanda mensual desagregada
+        por <b>Producto (10)</b>, <b>Cliente (5)</b> y <b>Período mensual (36 meses continuos)</b>,
+        generando exactamente <b>1.800 observaciones</b> (<code>2023-11-01</code> a <code>2026-10-01</code>).
+        Esta desagregación garantiza que los modelos predictivos (Fase 3) alimenten directamente las decisiones
+        de producción, trasbordo y distribución por cliente en el modelo de optimización matemática (Fase 5).
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Productos", f"{audit['productos_unicos']}", "P1 a P10")
+    c2.metric("Clientes", f"{audit['clientes_unicos']}", "Cliente 1 a 5")
+    c3.metric("Horizonte Temporal", f"{audit['meses_continuos']} meses", "Nov 2023 – Oct 2026")
+    c4.metric("Series Independientes", f"{audit['series_unicas']}", "Pares Producto-Cliente")
+    c5.metric("Panel Consolidado", f"{audit['registros_limpios_finales']:,}", "0% valores nulos")
+
+    st.markdown("---")
+    col_left, col_right = st.columns([1.25, 1.0])
+
+    with col_left:
+        st.subheader("2. Verificador de Completitud de las 50 Series (Matriz 10 × 5)")
+        matriz_conteo = (
+            df_clean.groupby(["Producto", "Cliente"])["Fecha"]
+            .count()
+            .unstack("Cliente")
+            .loc[PRODUCTOS_ORDENADOS, CLIENTES_ORDENADOS]
+        )
+        todas_completas = bool((matriz_conteo == 36).all().all())
+        if todas_completas:
+            st.success(
+                "✅ Panel 100% balanceado: las 50 combinaciones Producto-Cliente cuentan exactamente con "
+                "36 períodos mensuales continuos sin huecos temporales."
+            )
+        else:
+            st.warning("⚠️ Existen series con conteo distinto a 36 períodos.")
+
+        fig_completitud = px.imshow(
+            matriz_conteo,
+            text_auto=True,
+            color_continuous_scale=[[0.0, "#f4a261"], [1.0, "#1b7895"]],
+            aspect="auto",
+            labels=dict(x="Cliente", y="Producto", color="Meses"),
+        )
+        fig_completitud.update_layout(
+            title="Matriz de Completitud (Meses Disponibles por Serie)",
+            height=380,
+            margin=dict(l=40, r=20, t=50, b=30),
+        )
+        st.plotly_chart(fig_completitud)
+
+    with col_right:
+        st.subheader("3. Asignación Histórica Planta – Producto")
+        tabla_homologacion = (
+            df_clean.groupby("Producto", as_index=False)
+            .agg(
+                Planta=("Planta", "first"),
+                Precio_Mediano=("Precio", "median"),
+                Demanda_Total=("Demanda", "sum"),
+            )
+        )
+        tabla_homologacion["_num"] = tabla_homologacion["Producto"].str.extract(r"(\d+)").astype(int)
+        tabla_homologacion = tabla_homologacion.sort_values("_num").drop(columns=["_num"]).reset_index(drop=True)
+        st.dataframe(
+            tabla_homologacion,
+            hide_index=True,
+            height=380,
+            column_config={
+                "Precio_Mediano": st.column_config.NumberColumn("Precio Mediano (COP)", format="$ %,.0f"),
+                "Demanda_Total": st.column_config.NumberColumn("Demanda Total (uds)", format="%,d"),
+            },
+        )
+
+    st.markdown("---")
+    st.subheader("4. Explorador Interactivo y Exportación de la Base Limpia")
+
+    f_col1, f_col2, f_col3, f_col4 = st.columns(4)
+    with f_col1:
+        f_plantas_t1 = st.multiselect("Filtrar Planta", PLANTAS_OFICIALES, default=PLANTAS_OFICIALES, key="t1_planta")
+    with f_col2:
+        prods_disponibles_t1 = [p for p in PRODUCTOS_ORDENADOS if MAPA_PRODUCTO_PLANTA[p] in f_plantas_t1]
+        f_prods_t1 = st.multiselect("Filtrar Producto", prods_disponibles_t1, default=prods_disponibles_t1, key="t1_prod")
+    with f_col3:
+        f_clis_t1 = st.multiselect("Filtrar Cliente", CLIENTES_ORDENADOS, default=CLIENTES_ORDENADOS, key="t1_cli")
+    with f_col4:
+        fechas_unicas_t1 = sorted(df_clean["Fecha"].dt.strftime("%Y-%m-%d").unique())
+        f_rango_t1 = st.select_slider(
+            "Rango de Fechas",
+            options=fechas_unicas_t1,
+            value=(fechas_unicas_t1[0], fechas_unicas_t1[-1]),
+            key="t1_fecha",
+        )
+
+    df_explorar = df_clean[
+        (df_clean["Planta"].isin(f_plantas_t1))
+        & (df_clean["Producto"].isin(f_prods_t1))
+        & (df_clean["Cliente"].isin(f_clis_t1))
+        & (df_clean["Fecha"] >= pd.to_datetime(f_rango_t1[0]))
+        & (df_clean["Fecha"] <= pd.to_datetime(f_rango_t1[1]))
+    ].copy()
+
+    df_explorar_view = df_explorar.copy()
+    df_explorar_view["Fecha"] = df_explorar_view["Fecha"].dt.strftime("%Y-%m-%d")
+
+    st.caption(f"Mostrando **{len(df_explorar_view):,}** de **{len(df_clean):,}** registros consolidados.")
+    st.dataframe(
+        df_explorar_view,
+        hide_index=True,
+        height=340,
+        column_config={
+            "Demanda": st.column_config.NumberColumn("Demanda (uds)", format="%,d"),
+            "Precio": st.column_config.NumberColumn("Precio (COP)", format="$ %,.0f"),
+        },
+    )
+
+    dl1, dl2, dl3 = st.columns(3)
+    with dl1:
+        st.download_button(
+            label="⬇️ Descargar Base Completa (`demanda_limpia_1800.csv`)",
+            data=convertir_df_a_csv_bytes(df_clean),
+            file_name="demanda_limpia_1800.csv",
+            mime="text/csv",
+            type="primary",
+            width="stretch",
+        )
+    with dl2:
+        st.download_button(
+            label="⬇️ Descargar Base Completa en Excel (.xlsx)",
+            data=convertir_df_a_excel_bytes(df_clean),
+            file_name="demanda_limpia_1800.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+        )
+    with dl3:
+        st.download_button(
+            label="⬇️ Descargar Vista Filtrada (CSV)",
+            data=convertir_df_a_csv_bytes(df_explorar),
+            file_name="demanda_limpia_filtrada.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+
+
+# ==============================================================================
+# PESTAÑA 2: FASE 2A — AUDITORÍA DEL PROCESO ETL
+# ==============================================================================
+with tab2:
+    st.subheader("1. Resumen Ejecutivo de Auditoría del Pipeline ETL")
+    st.markdown(
+        """
+        <div class="section-card">
+        Trazabilidad determinista paso a paso desde los registros crudos (con ruido de formatos,
+        duplicados, negativos, precios mal digitados, fechas imposibles, huecos y picos atípicos)
+        hasta el panel limpio <b>10 × 5 × 36 = 1.800 observaciones</b> con <b>0% de valores nulos</b>.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Registros Crudos", f"{audit['filas_crudas']:,}", f"{audit['filas_vacias']} filas vacías")
+    k2.metric("Duplicados Exactos", f"{audit['duplicados_exactos']}", "Detectados en crudo")
+    k3.metric("Llaves Repetidas Consolidadas", f"{audit['colisiones_llaves_duplicadas']}", f"→ {audit['combinaciones_unicas_validas']:,} únicas")
+    k4.metric("Negativos / Ceros Corregidos", f"{audit['demanda_neg_cero_corregidos']}", "Convertidos a NaN e imputados")
+    k5.metric("Outliers Interpolados (3×IQR)", f"{audit['outliers_detectados']}", "Por serie Producto-Cliente")
+
+    k6, k7, k8, k9, k10 = st.columns(5)
+    k6.metric("Celdas Reconstruidas (Panel)", f"{audit['celdas_reconstruidas_panel']}", "Reindexación 10×5×36")
+    k7.metric("Productos Recuperados", f"{audit['productos_recuperados']}", "Inferidos por Planta y Precio")
+    k8.metric("Precios Atípicos Corregidos", f"{audit['precios_atipicos_corregidos']}", "≤ 0 o > $100.000")
+    k9.metric("Fechas Imposibles Corregidas", f"{audit['fechas_imposibles_corregidas']}", f"{audit['formatos_fecha_unicos']} formatos crudos")
+    k10.metric("Registros Limpios Finales", f"{audit['registros_limpios_finales']:,}", "0% valores nulos")
+
+    st.markdown("#### Estandarización de Dimensiones y Flujo de Depuración")
+    e1, e2, e3, e4 = st.columns(4)
+    e1.info(f"**Fecha:** `{audit['formatos_fecha_unicos']}` variantes → **36 meses** (`YYYY-MM-01`)")
+    e2.info(f"**Producto:** `{audit['variantes_producto']}` variantes → **10 códigos** (`P1..P10`)")
+    e3.info(f"**Cliente:** `{audit['variantes_cliente']}` variantes → **5 clientes** (`Cliente 1..5`)")
+    e4.info(f"**Planta:** `{audit['variantes_planta']}` variantes → **4 plantas** oficiales")
+
+    st.markdown("---")
+    st.subheader("2. Comparador Visual: Antes vs. Después del Proceso ETL")
+
+    series_con_outliers = sorted(
+        {(o["Producto"], o["Cliente"]) for o in audit["outliers_detalle"]},
+        key=lambda x: (int(x[0][1:]), int(x[1].split()[-1])),
+    )
+
+    comp_c1, comp_c2, comp_c3 = st.columns([1.2, 1.0, 1.0])
+    with comp_c1:
+        modo_selector = st.radio(
+            "Filtro de selección de serie",
+            options=["Series con Outliers Detectados (Recomendado)", "Todas las 50 series (Producto - Cliente)"],
+            horizontal=False,
+        )
+
+    if modo_selector.startswith("Series") and series_con_outliers:
+        opciones_str = [f"{p} - {c}" for p, c in series_con_outliers]
+        with comp_c2:
+            serie_elegida = st.selectbox(
+                "Serie con anomalía",
+                options=opciones_str,
+                index=0,
+                help="Incluye casos críticos como P2 - Cliente 3 (129.000) y P10 - Cliente 4 (168.000).",
+            )
+        prod_sel, cli_sel = serie_elegida.split(" - ")
+        with comp_c3:
+            out_info = [o for o in audit["outliers_detalle"] if o["Producto"] == prod_sel and o["Cliente"] == cli_sel]
+            st.metric("Outliers en esta serie", len(out_info), f"Límite Sup: {out_info[0]['Limite_Superior']:,.1f}")
+    else:
+        with comp_c2:
+            prod_sel = st.selectbox("Producto", PRODUCTOS_ORDENADOS, index=1, key="etl_prod_all")
+        with comp_c3:
+            cli_sel = st.selectbox("Cliente", CLIENTES_ORDENADOS, index=2, key="etl_cli_all")
+
+    fig_comp = plot_comparacion_etl_serie(df_pre_interp, prod_sel, cli_sel)
+    st.plotly_chart(fig_comp)
+
+    st.markdown("---")
+    st.subheader("3. Registros Detallados de Auditoría")
+    sub_a, sub_b, sub_c, sub_d, sub_e = st.tabs(
+        [
+            f"🚨 Outliers ({audit['outliers_detectados']})",
+            f"➖ Demanda ≤ 0 ({audit['demanda_neg_cero_corregidos']})",
+            f"💲 Precios Atípicos ({audit['precios_atipicos_corregidos']})",
+            f"🔎 Productos Recuperados ({audit['productos_recuperados']})",
+            "📋 Nulos por Columna & Fechas",
+        ]
+    )
+
+    with sub_a:
+        df_out = pd.DataFrame(audit["outliers_detalle"])
+        st.dataframe(
+            df_out,
+            hide_index=True,
+            column_config={
+                "Valor_Original": st.column_config.NumberColumn("Valor Original", format="%,d"),
+                "Valor_Imputado": st.column_config.NumberColumn("Valor Imputado", format="%,d"),
+                "Limite_Superior": st.column_config.NumberColumn("Límite Sup. (Q3 + 3×IQR)", format="%,.2f"),
+            },
+        )
+
+    with sub_b:
+        st.dataframe(pd.DataFrame(audit["demanda_neg_cero_detalle"]), hide_index=True)
+
+    with sub_c:
+        st.dataframe(
+            pd.DataFrame(audit["precios_atipicos_detalle"]),
+            hide_index=True,
+            column_config={
+                "Precio_Numerico": st.column_config.NumberColumn("Precio Detectado", format="$ %,.0f"),
+            },
+        )
+
+    with sub_d:
+        st.dataframe(
+            pd.DataFrame(audit["productos_recuperados_detalle"]),
+            hide_index=True,
+            column_config={
+                "Precio": st.column_config.NumberColumn("Precio Observado", format="$ %,.0f"),
+                "Mediana_Referencia": st.column_config.NumberColumn("Mediana Producto", format="$ %,.0f"),
+            },
+        )
+
+    with sub_e:
+        nulos_comp = pd.DataFrame(
+            {
+                "Columna": list(audit["nulos_iniciales"].keys()),
+                "Nulos_Iniciales": list(audit["nulos_iniciales"].values()),
+                "Nulos_Finales": [audit["nulos_finales"].get(c, 0) for c in audit["nulos_iniciales"].keys()],
+            }
+        )
+        col_n1, col_n2 = st.columns(2)
+        with col_n1:
+            st.markdown("**Conteo de Nulos: Crudo vs. Limpio**")
+            st.dataframe(nulos_comp, hide_index=True)
+        with col_n2:
+            st.markdown("**Fechas de Calendario Inexistentes Corregidas**")
+            st.dataframe(pd.DataFrame(audit["fechas_imposibles_detalle"]), hide_index=True)
+
+
+# ==============================================================================
+# PESTAÑA 3: FASE 2B — ANALÍTICA DESCRIPTIVA
+# ==============================================================================
+with tab3:
+    st.subheader("Filtros Globales de Analítica Descriptiva")
+    fg1, fg2, fg3, fg4 = st.columns([1.0, 1.2, 1.0, 1.2])
+    with fg1:
+        sel_plantas = st.multiselect(
+            "Plantas",
+            options=PLANTAS_OFICIALES,
+            default=PLANTAS_OFICIALES,
+            key="desc_plantas",
+        )
+    with fg2:
+        prods_habilitados = [p for p in PRODUCTOS_ORDENADOS if MAPA_PRODUCTO_PLANTA[p] in sel_plantas]
+        sel_productos = st.multiselect(
+            "Productos",
+            options=prods_habilitados,
+            default=prods_habilitados,
+            key="desc_productos",
+        )
+    with fg3:
+        sel_clientes = st.multiselect(
+            "Clientes",
+            options=CLIENTES_ORDENADOS,
+            default=CLIENTES_ORDENADOS,
+            key="desc_clientes",
+        )
+    with fg4:
+        fechas_str = sorted(df_clean["Fecha"].dt.strftime("%Y-%m-%d").unique())
+        sel_fechas = st.select_slider(
+            "Horizonte Temporal",
+            options=fechas_str,
+            value=(fechas_str[0], fechas_str[-1]),
+            key="desc_fechas",
+        )
+
+    df_filt = df_clean[
+        (df_clean["Planta"].isin(sel_plantas))
+        & (df_clean["Producto"].isin(sel_productos))
+        & (df_clean["Cliente"].isin(sel_clientes))
+        & (df_clean["Fecha"] >= pd.to_datetime(sel_fechas[0]))
+        & (df_clean["Fecha"] <= pd.to_datetime(sel_fechas[1]))
+    ].copy()
+
+    if df_filt.empty:
+        st.warning("No hay datos disponibles para la combinación de filtros seleccionada. Ajusta los filtros.")
+    else:
+        df_filt_ing = df_filt.assign(Ingreso=df_filt["Demanda"] * df_filt["Precio"])
+        dem_total = int(df_filt["Demanda"].sum())
+        n_meses_filt = max(1, int(df_filt["Fecha"].nunique()))
+        prom_mensual_filt = dem_total / n_meses_filt
+        ingreso_total = float(df_filt_ing["Ingreso"].sum())
+
+        tab_p_tmp = get_tabla_productos(df_filt)
+        tab_c_tmp = get_tabla_clientes(df_filt)
+        prod_lider = tab_p_tmp.iloc[0]
+        cli_lider = tab_c_tmp.iloc[0]
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Demanda Total", f"{dem_total:,} uds", f"{len(df_filt):,} registros")
+        m2.metric("Promedio Mensual Agregado", f"{prom_mensual_filt:,.1f} uds", f"En {n_meses_filt} meses")
+        m3.metric("Producto Líder", prod_lider["Producto"], f"{prod_lider['Demanda_Total']:,} uds ({prod_lider['Participacion_pct']}%)")
+        m4.metric("Cliente Líder", cli_lider["Cliente"], f"{cli_lider['Demanda_Total']:,} uds ({cli_lider['Participacion_pct']}%)")
+        m5.metric("Ingreso Estimado Total", f"${ingreso_total / 1e9:,.2f} B", f"${ingreso_total:,.0f} COP")
+
+        st.markdown("---")
+        # 1. Comportamiento histórico de la demanda
+        st.markdown("### 1. Comportamiento Histórico de la Demanda")
+        h1, h2, h3 = st.columns([1.2, 1.2, 1.0])
+        with h1:
+            nivel_agregacion = st.radio(
+                "Nivel de desagregación",
+                options=["Total", "Producto", "Cliente", "Planta"],
+                horizontal=True,
+                key="desc_agreg",
+            )
+        with h2:
+            ventana_ma = st.slider("Ventana de Promedio Móvil (meses)", min_value=1, max_value=6, value=3, key="desc_ma")
+        with h3:
+            mostrar_ols = st.checkbox("Mostrar tendencia lineal (OLS)", value=True, key="desc_ols")
+
+        st.plotly_chart(
+            plot_evolucion_historica(
+                df_filt,
+                agregacion=nivel_agregacion,
+                ventana_ma=ventana_ma,
+                mostrar_tendencia=mostrar_ols,
+            )
+        )
+
+        st.markdown("---")
+        # 2. Productos con mayor y menor demanda
+        st.markdown("### 2. Productos con Mayor y Menor Demanda (Ranking y Pareto 80/20)")
+        p_col1, p_col2 = st.columns(2)
+        with p_col1:
+            st.plotly_chart(plot_ranking_productos_barras(df_filt))
+        with p_col2:
+            st.plotly_chart(plot_pareto_productos(df_filt))
+
+        st.dataframe(
+            tab_p_tmp,
+            hide_index=True,
+            column_config={
+                "Demanda_Total": st.column_config.NumberColumn("Demanda Total", format="%,d"),
+                "Promedio_Mensual": st.column_config.NumberColumn("Prom. Mensual", format="%,.1f"),
+                "Participacion_pct": st.column_config.NumberColumn("Participación (%)", format="%.2f%%"),
+                "Acumulado_pct": st.column_config.NumberColumn("% Acumulado", format="%.2f%%"),
+                "Precio_Mediano": st.column_config.NumberColumn("Precio Mediano", format="$ %,.0f"),
+                "Ingreso_Estimado": st.column_config.NumberColumn("Ingreso Estimado", format="$ %,.0f"),
+            },
+        )
+
+        st.markdown("---")
+        # 3. Clientes y plantas con mayor participación
+        st.markdown("### 3. Participación de Clientes y Plantas")
+        c_col1, c_col2 = st.columns([1.0, 1.2])
+        with c_col1:
+            st.plotly_chart(plot_participacion_clientes_donut(df_filt))
+        with c_col2:
+            st.plotly_chart(plot_barras_apiladas_producto_cliente(df_filt))
+
+        st.plotly_chart(plot_treemap_planta_producto_cliente(df_filt))
+
+        tc1, tc2 = st.columns(2)
+        with tc1:
+            st.markdown("**Participación por Cliente**")
+            st.dataframe(
+                tab_c_tmp,
+                hide_index=True,
+                column_config={
+                    "Demanda_Total": st.column_config.NumberColumn("Demanda Total", format="%,d"),
+                    "Promedio_Mensual": st.column_config.NumberColumn("Prom. Mensual", format="%,.1f"),
+                    "Participacion_pct": st.column_config.NumberColumn("Participación", format="%.2f%%"),
+                    "Acumulado_pct": st.column_config.NumberColumn("Acumulado", format="%.2f%%"),
+                    "Ingreso_Estimado": st.column_config.NumberColumn("Ingreso Estimado", format="$ %,.0f"),
+                },
+            )
+        with tc2:
+            st.markdown("**Participación por Planta de Producción**")
+            st.dataframe(
+                get_tabla_plantas(df_filt),
+                hide_index=True,
+                column_config={
+                    "Demanda_Total": st.column_config.NumberColumn("Demanda Total", format="%,d"),
+                    "Participacion_pct": st.column_config.NumberColumn("Participación", format="%.2f%%"),
+                    "Ingreso_Estimado": st.column_config.NumberColumn("Ingreso Estimado", format="$ %,.0f"),
+                },
+            )
+
+        st.markdown("---")
+        # 4. Tendencias y Estacionalidad
+        st.markdown("### 4. Tendencias y Estacionalidad")
+        e_col1, e_col2 = st.columns([1.0, 1.15])
+        with e_col1:
+            st.plotly_chart(plot_indice_estacional(df_filt))
+        with e_col2:
+            modo_hm = st.radio(
+                "Vista del Heatmap Estacional",
+                options=["Producto vs Mes", "Año vs Mes"],
+                horizontal=True,
+                key="desc_hm_modo",
+            )
+            st.plotly_chart(plot_heatmap_estacionalidad(df_filt, modo=modo_hm))
+
+        st.markdown("#### Descomposición Clásica de Series de Tiempo (`seasonal_decompose`, período = 12)")
+        dc1, dc2, dc3 = st.columns(3)
+        with dc1:
+            dc_prod = st.selectbox(
+                "Producto a descomponer",
+                options=["Todos"] + [p for p in PRODUCTOS_ORDENADOS if p in sel_productos],
+                index=1 if sel_productos else 0,
+                key="dc_prod",
+            )
+        with dc2:
+            dc_cli = st.selectbox(
+                "Cliente a descomponer",
+                options=["Todos"] + [c for c in CLIENTES_ORDENADOS if c in sel_clientes],
+                index=0,
+                key="dc_cli",
+            )
+        with dc3:
+            dc_mod = st.selectbox(
+                "Modelo de descomposición",
+                options=["additive", "multiplicative"],
+                index=0,
+                key="dc_mod",
+            )
+
+        fig_decomp, decomp_info = plot_descomposicion_serie(
+            df_filt,
+            producto=dc_prod,
+            cliente=dc_cli,
+            modelo=dc_mod,
+        )
+        st.plotly_chart(fig_decomp)
+        if decomp_info:
+            di1, di2, di3, di4 = st.columns(4)
+            di1.metric("Serie Analizada", decomp_info["serie"])
+            di2.metric("Períodos Continuos", decomp_info["periodos"])
+            di3.metric("Mes Pico Estacional", decomp_info["mes_pico_estacional"])
+            di4.metric("Mes Valle Estacional", decomp_info["mes_valle_estacional"])
+
+        st.markdown("---")
+        # 5. Variabilidad de la demanda
+        st.markdown("### 5. Variabilidad de la Demanda y Matriz ABC–XYZ")
+        dim_box = st.radio(
+            "Dimensión del Boxplot",
+            options=["Producto", "Cliente"],
+            horizontal=True,
+            key="desc_box_dim",
+        )
+        st.plotly_chart(plot_boxplots_demanda(df_filt, dimension=dim_box))
+        st.plotly_chart(plot_matriz_abc_xyz(df_filt))
+
+        st.markdown("#### Tabla Estadística Completa (Media, Mediana, σ, IQR, CV% e Ingreso)")
+        nivel_stats = st.radio(
+            "Nivel de agregación estadística",
+            options=["50 Series (Producto - Cliente)", "10 Productos (Agregado Mensual)"],
+            horizontal=True,
+            key="desc_stats_lvl",
+        )
+        por_arg = "Producto" if nivel_stats.startswith("10") else "Producto-Cliente"
+        tabla_stats = get_tabla_estadistica_series(df_filt, por=por_arg)
+
+        st.dataframe(
+            tabla_stats,
+            hide_index=True,
+            height=400,
+            column_config={
+                "Demanda_Total": st.column_config.NumberColumn("Demanda Total", format="%,d"),
+                "Participacion_pct": st.column_config.NumberColumn("Part. %", format="%.2f%%"),
+                "Media": st.column_config.NumberColumn("Media (μ)", format="%,.2f"),
+                "Mediana": st.column_config.NumberColumn("Mediana", format="%,.2f"),
+                "Desv_Est": st.column_config.NumberColumn("Desv. Est. (σ)", format="%,.2f"),
+                "IQR": st.column_config.NumberColumn("IQR", format="%,.2f"),
+                "CV_pct": st.column_config.NumberColumn("CV (%)", format="%.2f%%"),
+                "Ingreso_Estimado": st.column_config.NumberColumn("Ingreso Estimado", format="$ %,.0f"),
+            },
+        )
+        st.download_button(
+            label="⬇️ Descargar Tabla Estadística (CSV)",
+            data=tabla_stats.to_csv(index=False).encode("utf-8"),
+            file_name=f"estadisticas_demanda_{por_arg.lower()}.csv",
+            mime="text/csv",
+        )
+
+
+# ==============================================================================
+# PESTAÑA 4: FASE 3 — MODELOS DE PRONÓSTICO Y SERIES TEMPORALES
+# ==============================================================================
+with tab4:
+    st.subheader("1. Configuración de Hiperparámetros y Validación Walk-Forward")
+    st.markdown(
+        """
+        <div class="section-card">
+        <b>Esquema de Validación Temporal Estricta (50 series independientes):</b>
+        Entrenamiento inicial con los primeros <b>30 meses</b> (<code>2023-11</code> a <code>2026-04</code>)
+        y validación <b>Walk-Forward 1 paso adelante</b> sobre los últimos <b>6 meses</b>
+        (<code>2026-05</code> a <code>2026-10</code>), garantizando cero fuga de información.
+        Posteriormente se reentrena con los <b>36 meses completos</b> para proyectar <b>Noviembre 2026 (t=37)</b>.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    hp1, hp2, hp3, hp4, hp5 = st.columns(5)
+    with hp1:
+        ma_window = st.slider(
+            "Ventana Promedio Móvil (k)",
+            min_value=2,
+            max_value=6,
+            value=3,
+            key="f3_ma_k",
+        )
+    with hp2:
+        hw_seasonal = st.selectbox(
+            "Estacionalidad Holt-Winters",
+            options=["add", "mul"],
+            index=0,
+            format_func=lambda v: "Aditiva ('add')" if v == "add" else "Multiplicativa ('mul')",
+            key="f3_hw_seas",
+        )
+    with hp3:
+        mlp_lags = st.slider(
+            "Rezagos Ventana MLP (W)",
+            min_value=3,
+            max_value=6,
+            value=4,
+            key="f3_mlp_lags",
+        )
+    with hp4:
+        mlp_max_iter = st.slider(
+            "Épocas MLP (max_iter)",
+            min_value=100,
+            max_value=300,
+            value=200,
+            step=50,
+            key="f3_mlp_iter",
+        )
+    with hp5:
+        criterio_sel = st.selectbox(
+            "Criterio de Selección",
+            options=["MAPE", "RMSE", "MAE"],
+            index=0,
+            key="f3_criterio",
+        )
+
+    forecast_res = ejecutar_pronosticos_cacheados(
+        df_clean=df_clean,
+        ma_window=ma_window,
+        hw_seasonal=hw_seasonal,
+        mlp_lags=mlp_lags,
+        mlp_max_iter=mlp_max_iter,
+        criterio=criterio_sel,
+        exportar_csv=(uploaded_file is None),
+    )
+
+    st.markdown("---")
+    st.subheader("2. Visor Interactivo por Serie (Producto × Cliente)")
+    vs1, vs2, vs3 = st.columns([1.0, 1.0, 1.2])
+    with vs1:
+        prod_f3 = st.selectbox("Producto", options=PRODUCTOS_ORDENADOS, index=0, key="f3_prod")
+    with vs2:
+        cli_f3 = st.selectbox("Cliente", options=CLIENTES_ORDENADOS, index=0, key="f3_cli")
+
+    detalle_serie = forecast_res["series_details"][(prod_f3, cli_f3)]
+    ganador_serie = detalle_serie["winner"]
+    with vs3:
+        st.metric(
+            "Modelo Ganador en esta Serie",
+            ganador_serie,
+            f"Pronóstico Nov-2026: {detalle_serie['nov_preds'][ganador_serie]:,} uds",
+        )
+
+    st.plotly_chart(plot_series_forecast_comparison(detalle_serie, prod_f3, cli_f3))
+
+    st.markdown("#### Comparativa de Desempeño en Validación (6 meses) y Pronóstico Nov-2026")
+    cols_cards = st.columns(4)
+    for col_card, model_name in zip(cols_cards, MODEL_NAMES):
+        m_vals = detalle_serie["metrics"][model_name]
+        pred_nov = detalle_serie["nov_preds"][model_name]
+        es_ganador = model_name == ganador_serie
+        badge = " 🏆 Ganador" if es_ganador else ""
+        with col_card:
+            st.markdown(f"**{model_name}{badge}**")
+            st.metric(
+                label="Pronóstico Nov-2026",
+                value=f"{pred_nov:,} uds",
+                delta=f"{criterio_sel}: {m_vals[criterio_sel]:.2f}{'%' if criterio_sel == 'MAPE' else ''}",
+                delta_color="normal" if es_ganador else "off",
+            )
+            st.caption(
+                f"MAE: `{m_vals['MAE']:.2f}` | RMSE: `{m_vals['RMSE']:.2f}` | MAPE: `{m_vals['MAPE']:.2f}%`"
+            )
+
+    st.markdown("---")
+    st.subheader("3. Ficha Técnica: Arquitectura MLP y Selección de Estacionalidad")
+    ft1, ft2 = st.columns(2)
+    with ft1:
+        st.markdown(
+            f"""
+            <div class="section-card">
+            <b>Arquitectura Red Neuronal Multicapa (MLPRegressor):</b><br>
+            • <b>Ventana Deslizante (W={mlp_lags}):</b> <code>X_t = [D_{{t-{mlp_lags}}}, ..., D_{{t-1}}] → Y_t = D_t</code><br>
+            • <b>Escalamiento sin fuga:</b> <code>StandardScaler</code> ajustado únicamente sobre el conjunto de entrenamiento en cada paso.<br>
+            • <b>Capas Ocultas:</b> <code>(32, 16)</code> neuronas con activación <code>ReLU</code>.<br>
+            • <b>Optimización:</b> <code>Adam</code> (retropropagación MSE, <code>alpha=0.01</code>, <code>max_iter={mlp_max_iter}</code>, <code>random_state=42</code>).
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with ft2:
+        st.markdown(
+            """
+            <div class="section-card">
+            <b>Justificación Holt-Winters Aditivo vs. Multiplicativo:</b><br>
+            • <b>Variante Aditiva (<code>seasonal='add'</code>, por defecto):</b> Recomendada cuando la amplitud de los ciclos estacionales anuales (<code>period=12</code>) se mantiene relativamente constante en unidades absolutas a lo largo del tiempo.<br>
+            • <b>Variante Multiplicativa (<code>seasonal='mul'</code>):</b> Útil cuando la variación estacional crece proporcionalmente con el nivel de tendencia; requiere demanda estrictamente positiva (garantizada por la Fase 2).
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+# ==============================================================================
+# PESTAÑA 5: FASE 4 — EVALUACIÓN, SELECCIÓN AUTOMÁTICA Y MATRIZ D_{p,c}
+# ==============================================================================
+with tab5:
+    df_metrics_50 = forecast_res["df_metrics"]
+    df_forecasts_50 = forecast_res["df_forecasts"]
+    df_prod_summary = forecast_res["df_product_summary"]
+
+    st.subheader("1. Indicadores Globales del Pronóstico — Noviembre 2026")
+    dem_total_nov = int(df_forecasts_50["Demanda_Pronosticada_Nov2026"].sum())
+    ing_total_nov = float(df_forecasts_50["Ingreso_Pronosticado_Nov2026"].sum())
+    mape_global = float(df_metrics_50["MAPE_Ganador"].mean())
+    rmse_global = float(df_metrics_50["RMSE_Ganador"].mean())
+    conteo_wins = df_metrics_50["Modelo_Ganador"].value_counts()
+    modelo_top = str(conteo_wins.index[0])
+    wins_top = int(conteo_wins.iloc[0])
+
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Demanda Total Nov-2026 (∑ D_pc)", f"{dem_total_nov:,} uds", "50 series Producto × Cliente")
+    g2.metric("Ingreso Esperado Nov-2026", f"${ing_total_nov / 1e6:,.1f} M", f"${ing_total_nov:,.0f} COP")
+    g3.metric("MAPE Promedio Ganadores", f"{mape_global:.2f}%", f"RMSE promedio: {rmse_global:.2f} uds")
+    g4.metric("Modelo Más Ganador", modelo_top, f"{wins_top} de 50 series ({wins_top * 2}%)")
+
+    st.markdown("---")
+    st.subheader(f"2. Tabla Resumen Oficial por Producto (Métrica: {criterio_sel}) y Distribución de Victorias")
+    r_col1, r_col2 = st.columns([1.35, 1.0])
+
+    with r_col1:
+        fmt_suffix = "%" if criterio_sel == "MAPE" else ""
+        st.dataframe(
+            df_prod_summary,
+            hide_index=True,
+            height=395,
+            column_config={
+                "Promedio móvil": st.column_config.NumberColumn(f"Promedio móvil ({criterio_sel})", format=f"%.2f{fmt_suffix}"),
+                "Holt": st.column_config.NumberColumn(f"Holt ({criterio_sel})", format=f"%.2f{fmt_suffix}"),
+                "Holt-Winters": st.column_config.NumberColumn(f"Holt-Winters ({criterio_sel})", format=f"%.2f{fmt_suffix}"),
+                "MLP": st.column_config.NumberColumn(f"MLP ({criterio_sel})", format=f"%.2f{fmt_suffix}"),
+                "Demanda_Total_Nov2026": st.column_config.NumberColumn("Demanda Nov-2026", format="%,d"),
+            },
+        )
+        st.caption(
+            f"El error por producto corresponde al promedio simple de `{criterio_sel}` entre sus 5 clientes."
+        )
+
+    with r_col2:
+        st.plotly_chart(plot_winner_distribution_donut(df_metrics_50))
+
+    st.markdown("---")
+    st.subheader("3. Matriz de Demanda Pronosticada D_{p,c} (10 × 5) — Entrada para Fase 5 (PuLP)")
+    st.plotly_chart(plot_demand_matrix_heatmap(df_forecasts_50))
+
+    st.markdown("---")
+    st.subheader("4. Detalle Completo de las 50 Series y Exportación")
+    st.dataframe(
+        df_metrics_50,
+        hide_index=True,
+        height=400,
+        column_config={
+            "Precio_Mediano": st.column_config.NumberColumn("Precio Mediano", format="$ %,.0f"),
+            "MAPE_Promedio_movil": st.column_config.NumberColumn("MAPE PM", format="%.2f%%"),
+            "MAPE_Holt": st.column_config.NumberColumn("MAPE Holt", format="%.2f%%"),
+            "MAPE_Holt_Winters": st.column_config.NumberColumn("MAPE HW", format="%.2f%%"),
+            "MAPE_MLP": st.column_config.NumberColumn("MAPE MLP", format="%.2f%%"),
+            "MAE_Ganador": st.column_config.NumberColumn("MAE Ganador", format="%.2f"),
+            "RMSE_Ganador": st.column_config.NumberColumn("RMSE Ganador", format="%.2f"),
+            "MAPE_Ganador": st.column_config.NumberColumn("MAPE Ganador", format="%.2f%%"),
+            "Demanda_Pronosticada_Nov2026": st.column_config.NumberColumn("Demanda Nov-2026", format="%,d"),
+            "Ingreso_Pronosticado_Nov2026": st.column_config.NumberColumn("Ingreso Nov-2026", format="$ %,.0f"),
+        },
+    )
+
+    ex1, ex2, ex3, ex4 = st.columns(4)
+    with ex1:
+        st.download_button(
+            label="⬇️ `pronosticos_nov2026.csv`",
+            data=convertir_df_a_csv_bytes(df_forecasts_50),
+            file_name="pronosticos_nov2026.csv",
+            mime="text/csv",
+            type="primary",
+            width="stretch",
+        )
+    with ex2:
+        st.download_button(
+            label="⬇️ `pronosticos_nov2026.xlsx`",
+            data=convertir_df_a_excel_bytes(df_forecasts_50, sheet_name="Pronosticos_Nov2026"),
+            file_name="pronosticos_nov2026.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+        )
+    with ex3:
+        st.download_button(
+            label="⬇️ `metricas_modelos_50series.csv`",
+            data=convertir_df_a_csv_bytes(df_metrics_50),
+            file_name="metricas_modelos_50series.csv",
+            mime="text/csv",
+            width="stretch",
+        )
+    with ex4:
+        st.download_button(
+            label="⬇️ `metricas_modelos_50series.xlsx`",
+            data=convertir_df_a_excel_bytes(df_metrics_50, sheet_name="Metricas_50_Series"),
+            file_name="metricas_modelos_50series.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+        )
+
+
+# ==============================================================================
+# PESTAÑA 6: FASE 5 — MODELO DE OPTIMIZACIÓN MATEMÁTICA (PuLP)
+# ==============================================================================
+with tab6:
+    st.subheader("1. Integración Predictiva → Prescriptiva")
+    st.markdown(
+        """
+        <div class="section-card">
+        <b>Flujo de integración:</b> Demanda histórica → ETL → Pronósticos → Selección del mejor modelo
+        → <b>Matriz D<sub>p,c</sub> (Fase 4)</b> → + Costos + Capacidades → <b>Modelo de programación lineal (PuLP)</b>
+        → Plan óptimo de <b>Producción + Trasbordo + Distribución</b> con <b>costo mínimo</b>.<br>
+        Horizonte de planeación único: <b>Noviembre 2026</b> (1 mes). Unidades: <b>uds/mes</b> y <b>COP/ud</b>.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    red1, red2 = st.columns(2)
+    with red1:
+        st.markdown("**Nodos de trasbordo (ubicación de referencia)**")
+        st.dataframe(
+            pd.DataFrame({"Nodo": NODOS, "Ubicación": [UBICACION_NODOS[n] for n in NODOS]}),
+            hide_index=True,
+        )
+    with red2:
+        st.markdown("**Empresas demandantes (ubicación de referencia)**")
+        st.dataframe(
+            pd.DataFrame(
+                {"Cliente": CLIENTES_ORDENADOS, "Ciudad": [UBICACION_CLIENTES[c] for c in CLIENTES_ORDENADOS]}
+            ),
+            hide_index=True,
+        )
+    st.caption(
+        "Las ubicaciones, distancias, flotas y factores de costo son supuestos de diseño del grupo "
+        "(el enunciado pide construir los parámetros con unidades y justificación)."
+    )
+
+    # --------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("2. Formulación Matemática del Modelo")
+    with st.expander("📐 Ver conjuntos, variables, función objetivo y restricciones", expanded=False):
+        st.markdown(
+            "**Conjuntos:** $P$ = productos (10), $C$ = clientes (5), $F$ = plantas (4), $N$ = nodos de trasbordo (2).\n\n"
+            "**Variables de decisión (uds/mes, continuas ≥ 0):** $Q_{fp}$ producción · $X_{fnp}$ envío planta→nodo · "
+            "$Y_{ncp}$ envío nodo→cliente · $S_{pc}$ demanda no satisfecha (solo si se permiten faltantes)."
+        )
+        st.markdown("**Función objetivo (COP):**")
+        st.latex(
+            r"\min Z = \sum_{f,p} CP_{fp}\,Q_{fp} + \sum_{f,n,p} CT_{fnp}\,X_{fnp} + \sum_{n,c,p} CD_{ncp}\,Y_{ncp}"
+            r" \;\left[+ \sum_{p,c} Pen_{pc}\,S_{pc}\right]"
+        )
+        st.markdown("**Restricciones:**")
+        st.latex(r"\text{R1 Demanda: } \sum_{n} Y_{ncp} \;[+\,S_{pc}] = D_{pc} \quad \forall p,c")
+        st.latex(r"\text{R2 Capacidad de producción: } Q_{fp} \le Cap_{fp} \quad \forall f,p")
+        st.latex(r"\text{R3 Balance en plantas: } Q_{fp} = \sum_{n} X_{fnp} \quad \forall f,p")
+        st.latex(r"\text{R4 Balance en nodos: } \sum_{f} X_{fnp} = \sum_{c} Y_{ncp} \quad \forall n,p")
+        st.latex(r"\text{R5 Capacidad de nodos: } \sum_{f,p} X_{fnp} \le CapN_{n} \quad \forall n")
+        st.latex(
+            r"\text{R6 Transporte: } \sum_{p} X_{fnp} \le CapT_{fn} \;\; \forall f,n \qquad "
+            r"\sum_{p} Y_{ncp} \le CapD_{nc} \;\; \forall n,c"
+        )
+        st.latex(r"\text{R7 No negatividad: } Q_{fp},\, X_{fnp},\, Y_{ncp} \,[,\,S_{pc}] \ge 0")
+        st.caption(
+            "El término entre corchetes solo se activa con la opción 'Permitir faltantes'. Sin ella, si la capacidad "
+            "no alcanza, el modelo se reporta como NO FACTIBLE en lugar de mostrar una solución que incumpla restricciones."
+        )
+
+    # --------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("3. Parámetros del Modelo (unidades y justificación)")
+
+    with st.expander("⚙️ Ajustar supuestos de costos y capacidades", expanded=False):
+        sp1, sp2, sp3, sp4 = st.columns(4)
+        with sp1:
+            pct_cp = st.slider("Costo producción (% del precio)", 40, 70, int(SUPUESTOS_DEFAULT["pct_costo_produccion"] * 100), key="f5_pct_cp")
+            recargo = st.slider("Recargo planta no asignada (%)", 0, 40, int(SUPUESTOS_DEFAULT["recargo_planta_secundaria"] * 100), key="f5_recargo")
+        with sp2:
+            margen = st.slider("Margen capacidad sobre pico histórico (%)", 0, 30, int(SUPUESTOS_DEFAULT["margen_capacidad"] * 100), key="f5_margen")
+            pct_sec = st.slider("Capacidad plantas no asignadas (%)", 0, 50, int(SUPUESTOS_DEFAULT["pct_capacidad_secundaria"] * 100), key="f5_pct_sec")
+        with sp3:
+            tarifa_t = st.number_input("Tarifa troncal (COP/ud·km)", 0.5, 10.0, SUPUESTOS_DEFAULT["tarifa_troncal"], 0.1, key="f5_tt")
+            tarifa_d = st.number_input("Tarifa distribución (COP/ud·km)", 0.5, 15.0, SUPUESTOS_DEFAULT["tarifa_distribucion"], 0.1, key="f5_td")
+        with sp4:
+            cap_norte = st.number_input("CapN Nodo Norte (uds/mes)", 0, 20000, int(CAP_NODO_DEFAULT["Nodo Norte"]), 100, key="f5_capn_n")
+            cap_centro = st.number_input("CapN Nodo Centro (uds/mes)", 0, 20000, int(CAP_NODO_DEFAULT["Nodo Centro"]), 100, key="f5_capn_c")
+
+    supuestos_sel = {
+        **SUPUESTOS_DEFAULT,
+        "pct_costo_produccion": pct_cp / 100,
+        "recargo_planta_secundaria": recargo / 100,
+        "margen_capacidad": margen / 100,
+        "pct_capacidad_secundaria": pct_sec / 100,
+        "tarifa_troncal": float(tarifa_t),
+        "tarifa_distribucion": float(tarifa_d),
+    }
+    cap_nodo_sel = {"Nodo Norte": float(cap_norte), "Nodo Centro": float(cap_centro)}
+
+    oc1, oc2 = st.columns([1.2, 1.0])
+    with oc1:
+        permitir_faltantes = st.toggle(
+            "Permitir faltantes con penalización (1,5 × precio por unidad no atendida)",
+            value=False,
+            key="f5_faltantes",
+        )
+    with oc2:
+        st.caption(
+            "Por defecto toda la demanda debe atenderse (R1 con igualdad). Active los faltantes solo si quiere "
+            "ver qué parte de la demanda no se puede cubrir cuando la capacidad no alcanza."
+        )
+
+    res_opt = resolver_optimizacion_cacheada(
+        df_forecasts=forecast_res["df_forecasts"],
+        df_clean=df_clean,
+        supuestos_items=tuple(sorted(supuestos_sel.items())),
+        cap_nodo_items=tuple(sorted(cap_nodo_sel.items())),
+        factor_demanda=1.0,
+        permitir_faltantes=permitir_faltantes,
+    )
+    par_opt = res_opt["parametros"]
+    tabs_par = tablas_parametros(par_opt)
+
+    pt0, pt1, pt2, pt3, pt4, pt5 = st.tabs(
+        ["📋 Supuestos", "D_pc Demanda", "Cap_fp y CP_fp Producción", "CT_fnp Transporte", "CD_ncp Distribución", "CapN · CapT · CapD"]
+    )
+    with pt0:
+        st.dataframe(pd.DataFrame(TABLA_SUPUESTOS), hide_index=True)
+    with pt1:
+        st.markdown("Demanda pronosticada **D_pc (uds/mes)** — modelo ganador por serie (Fase 4).")
+        st.dataframe(tabs_par["D"], column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in tabs_par["D"].columns})
+    with pt2:
+        cpa, cpb = st.columns(2)
+        with cpa:
+            st.markdown("**Cap_fp — Capacidad de producción (uds/mes)**")
+            st.dataframe(tabs_par["Cap"])
+        with cpb:
+            st.markdown("**CP_fp — Costo unitario de producción (COP/ud)**")
+            st.dataframe(tabs_par["CP"], column_config={c: st.column_config.NumberColumn(format="$ %,.0f") for c in tabs_par["CP"].columns})
+    with pt3:
+        st.markdown("**CT_fnp — Costo unitario planta → nodo (COP/ud)** = tarifa troncal × km + seguro de carga")
+        st.dataframe(tabs_par["CT"], column_config={c: st.column_config.NumberColumn(format="$ %,.0f") for c in tabs_par["CT"].columns})
+    with pt4:
+        st.markdown("**CD_ncp — Costo unitario nodo → cliente (COP/ud)** = tarifa distribución × km + seguro + cross-docking")
+        st.dataframe(tabs_par["CD"], column_config={c: st.column_config.NumberColumn(format="$ %,.0f") for c in tabs_par["CD"].columns})
+    with pt5:
+        st.markdown("**CapN_n — Capacidad de procesamiento de los nodos**")
+        st.dataframe(tabs_par["CapN"], hide_index=True)
+        cap_a, cap_b = st.columns(2)
+        with cap_a:
+            st.markdown("**CapT_fn — Capacidad de transporte planta → nodo**")
+            st.dataframe(tabs_par["CapT"], hide_index=True)
+        with cap_b:
+            st.markdown("**CapD_nc — Capacidad de transporte nodo → cliente**")
+            st.dataframe(tabs_par["CapD"], hide_index=True)
+        st.caption(f"Camión de referencia: {int(par_opt.supuestos['uds_por_camion']):,} uds. Arcos con 0 camiones no están permitidos.")
+
+    # --------------------------------------------------------------------------
+    st.markdown("---")
+    st.subheader("4. Solución Óptima")
+    st.caption(
+        f"Modelo de programación lineal: {res_opt['n_variables']} variables y {res_opt['n_restricciones']} restricciones · "
+        "Solver: CBC (incluido en PuLP)."
+    )
+
+    if not res_opt["optimo"]:
+        st.error(
+            f"**Estado del solver: {res_opt['estado']}.** Con los parámetros actuales NO existe un plan que atienda toda "
+            "la demanda respetando las capacidades. No se muestra ninguna solución para no presentar un plan que incumpla restricciones."
+        )
+        st.markdown("**Posibles cuellos de botella detectados:**")
+        for msg in res_opt["diagnostico"]:
+            st.markdown(f"- {msg}")
+        st.info("Ajuste las capacidades en ⚙️ o active **'Permitir faltantes'** para cuantificar la demanda no atendida.")
+    else:
+        df_Q_opt, df_X_opt, df_Y_opt, df_S_opt = res_opt["df_Q"], res_opt["df_X"], res_opt["df_Y"], res_opt["df_S"]
+        util = res_opt["utilizacion"]
+        faltante_total = float(df_S_opt["Faltante"].sum())
+
+        st.success(f"**Estado del solver: Óptimo.** Costo total mínimo Z = **${res_opt['Z']:,.0f} COP**")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("Costo Total Mínimo (Z)", f"${res_opt['Z'] / 1e6:,.1f} M", f"${res_opt['Z']:,.0f} COP", delta_color="off")
+        k2.metric("Costo de Producción", f"${res_opt['costo_produccion'] / 1e6:,.1f} M", f"{res_opt['costo_produccion'] / res_opt['Z'] * 100:.1f}% de Z", delta_color="off")
+        k3.metric("Transporte Planta → Nodo", f"${res_opt['costo_transporte'] / 1e6:,.1f} M", f"{res_opt['costo_transporte'] / res_opt['Z'] * 100:.1f}% de Z", delta_color="off")
+        k4.metric("Distribución Nodo → Cliente", f"${res_opt['costo_distribucion'] / 1e6:,.1f} M", f"{res_opt['costo_distribucion'] / res_opt['Z'] * 100:.1f}% de Z", delta_color="off")
+
+        k5, k6, k7, k8 = st.columns(4)
+        k5.metric("Unidades Producidas", f"{df_Q_opt['Cantidad'].sum():,.0f} uds")
+        k6.metric("Demanda Atendida", f"{df_S_opt['Atendido'].sum():,.0f} uds", f"de {df_S_opt['Demanda'].sum():,.0f} uds", delta_color="off")
+        k7.metric("Demanda No Satisfecha", f"{faltante_total:,.0f} uds", "Penalización: " + f"${res_opt['costo_penalizacion']:,.0f}", delta_color="inverse" if faltante_total > 0 else "off")
+        k8.metric("Costo Promedio por Unidad", f"${res_opt['Z'] / max(df_S_opt['Atendido'].sum(), 1):,.0f}")
+
+        if faltante_total > 0.5:
+            st.warning(
+                f"Se dejan de atender **{faltante_total:,.0f} uds**: la capacidad de la red no alcanza para toda la demanda."
+            )
+            st.dataframe(df_S_opt[df_S_opt["Faltante"] > 0.5], hide_index=True)
+
+        # ---------------- Respuestas a las preguntas del enunciado ----------------
+        st.markdown("#### ¿Qué producir, cuánto y en cuál planta?  (Q_fp)")
+        st.plotly_chart(plot_produccion_por_planta(df_Q_opt))
+        piv_Q = df_Q_opt.pivot(index="Producto", columns="Planta", values="Cantidad").loc[PRODUCTOS_ORDENADOS, PLANTAS_OFICIALES]
+        piv_Q["Total"] = piv_Q.sum(axis=1)
+        st.dataframe(piv_Q, column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in piv_Q.columns})
+
+        fuera = df_Q_opt[(df_Q_opt["Cantidad"] > 0.5) & (df_Q_opt["Planta"] != df_Q_opt["Producto"].map(MAPA_PRODUCTO_PLANTA))]
+        if not fuera.empty:
+            lista = ", ".join(f"{r.Producto} en {r.Planta} ({r.Cantidad:,.0f} uds)" for r in fuera.itertuples())
+            st.info(
+                f"**Hallazgo:** el modelo decide producir fuera de la planta asignada: {lista}. Aunque producir allí cuesta "
+                f"un {recargo}% más, el ahorro en transporte (o la falta de capacidad de la planta asignada) lo justifica."
+            )
+
+        st.markdown("#### ¿Qué cantidad enviar por cada nodo de trasbordo?  (X_fnp)")
+        tx1, tx2 = st.columns([1.0, 1.2])
+        with tx1:
+            res_x = df_X_opt.groupby(["Planta", "Nodo"])["Cantidad"].sum().unstack("Nodo").reindex(index=PLANTAS_OFICIALES, columns=NODOS)
+            res_x["Total"] = res_x.sum(axis=1)
+            st.dataframe(res_x, column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in res_x.columns})
+        with tx2:
+            piv_X = df_X_opt.pivot_table(index="Producto", columns="Nodo", values="Cantidad", aggfunc="sum").reindex(index=PRODUCTOS_ORDENADOS, columns=NODOS)
+            st.dataframe(piv_X, column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in piv_X.columns})
+
+        st.markdown("#### ¿Cuánto distribuir a cada cliente?  (Y_ncp)")
+        ty1, ty2 = st.columns([1.0, 1.2])
+        with ty1:
+            res_y = df_Y_opt.groupby(["Nodo", "Cliente"])["Cantidad"].sum().unstack("Cliente").reindex(index=NODOS, columns=CLIENTES_ORDENADOS)
+            st.dataframe(res_y, column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in res_y.columns})
+        with ty2:
+            piv_Y = df_Y_opt.pivot_table(index="Producto", columns="Cliente", values="Cantidad", aggfunc="sum").reindex(index=PRODUCTOS_ORDENADOS, columns=CLIENTES_ORDENADOS)
+            st.dataframe(piv_Y, column_config={c: st.column_config.NumberColumn(format="%,.0f") for c in piv_Y.columns})
+
+        st.markdown("#### Red de flujo óptima y costo total mínimo")
+        sk1, sk2 = st.columns([1.6, 1.0])
+        with sk1:
+            st.plotly_chart(plot_sankey_red(res_opt))
+        with sk2:
+            st.plotly_chart(plot_composicion_costos(res_opt))
+
+        # ---------------- Utilización ----------------
+        st.markdown("---")
+        st.subheader("5. Utilización de Capacidades y Cuellos de Botella")
+        u1, u2 = st.columns(2)
+        with u1:
+            st.plotly_chart(plot_utilizacion(util["plantas"], "Planta", "Utilización de plantas (sobre capacidad total por planta)"))
+        with u2:
+            st.plotly_chart(plot_utilizacion(util["nodos"], "Nodo", "Utilización de nodos de trasbordo (CapN)"))
+        u3, u4 = st.columns(2)
+        arcos_t = util["arcos_planta_nodo"][util["arcos_planta_nodo"]["Permitido"]].copy()
+        arcos_t["Arco"] = arcos_t["Planta"] + " → " + arcos_t["Nodo"]
+        arcos_d = util["arcos_nodo_cliente"][util["arcos_nodo_cliente"]["Permitido"]].copy()
+        arcos_d["Arco"] = arcos_d["Nodo"] + " → " + arcos_d["Cliente"]
+        with u3:
+            st.plotly_chart(plot_utilizacion(arcos_t, "Arco", "Utilización de transporte planta → nodo (CapT)"))
+        with u4:
+            st.plotly_chart(plot_utilizacion(arcos_d, "Arco", "Utilización de distribución nodo → cliente (CapD)"))
+
+        saturados = df_Q_opt[(df_Q_opt["Capacidad"] > 0) & (df_Q_opt["Utilizacion_%"] >= 99.5)]
+        cuellos = [f"{r.Producto} en {r.Planta}" for r in saturados.itertuples()]
+        cuellos += util["nodos"].loc[util["nodos"]["Utilizacion_%"] >= 99.5, "Nodo"].tolist()
+        arcos_todos = pd.concat([arcos_t, arcos_d], ignore_index=True)
+        cuellos += arcos_todos.loc[arcos_todos["Utilizacion_%"] >= 99.5, "Arco"].tolist()
+        if cuellos:
+            st.warning("**Restricciones activas (capacidad al 100 %):** " + "; ".join(cuellos) + ".")
+        else:
+            st.info("Ninguna capacidad está al 100 %: la red tiene holgura para la demanda pronosticada.")
+        st.caption(
+            "La utilización por planta divide la producción entre la suma de capacidades de todos sus productos "
+            "(incluye la capacidad de respaldo para productos no asignados)."
+        )
+
+        # ---------------- Verificación ----------------
+        st.markdown("---")
+        st.subheader("6. Verificación Independiente de Restricciones")
+        st.dataframe(res_opt["verificacion"], hide_index=True)
+        if res_opt["verificacion"]["Cumple"].all():
+            st.success("La solución cumple las 7 restricciones del modelo (tolerancia 0,0001 uds).")
+        else:
+            st.error("La solución NO cumple alguna restricción; revise los parámetros.")
+
+        # ---------------- Exportación ----------------
+        st.markdown("---")
+        resumen_costos = pd.DataFrame(
+            {
+                "Componente": ["Producción", "Transporte planta→nodo", "Distribución nodo→cliente", "Penalización faltantes", "Costo total Z"],
+                "COP": [res_opt["costo_produccion"], res_opt["costo_transporte"], res_opt["costo_distribucion"], res_opt["costo_penalizacion"], res_opt["Z"]],
+            }
+        )
+        hojas = {
+            "Resumen_Costos": resumen_costos,
+            "Produccion_Q": df_Q_opt,
+            "Trasbordo_X": df_X_opt[df_X_opt["Cantidad"] > 0.5],
+            "Distribucion_Y": df_Y_opt[df_Y_opt["Cantidad"] > 0.5],
+            "Demanda_Atendida": df_S_opt,
+            "Util_Plantas": util["plantas"],
+            "Util_Nodos": util["nodos"],
+            "Util_Planta_Nodo": util["arcos_planta_nodo"],
+            "Util_Nodo_Cliente": util["arcos_nodo_cliente"],
+            "Verificacion": res_opt["verificacion"],
+            "Param_D": tabs_par["D"],
+            "Param_Cap": tabs_par["Cap"],
+            "Param_CP": tabs_par["CP"],
+            "Param_CT": tabs_par["CT"],
+            "Param_CD": tabs_par["CD"],
+            "Param_CapN": tabs_par["CapN"],
+            "Param_CapT": tabs_par["CapT"],
+            "Param_CapD": tabs_par["CapD"],
+            "Supuestos": pd.DataFrame(TABLA_SUPUESTOS),
+        }
+        st.download_button(
+            label="⬇️ Descargar plan óptimo y parámetros (`plan_optimo_nov2026.xlsx`)",
+            data=convertir_varios_df_a_excel_bytes(hojas),
+            file_name="plan_optimo_nov2026.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            width="stretch",
+        )
+
+
+# ==============================================================================
+# Fase 6 — Análisis de escenarios
+# ==============================================================================
+with tab7:
+    st.header("Fase 6 — Análisis de escenarios de demanda")
+    st.caption("Optimista = demanda −10 % · Base = pronóstico de la Fase 4 · Pesimista = demanda +10 %. "
+               "Mismos costos y capacidades de la Fase 5; solo cambia D_pc.")
+
+    esc = correr_escenarios_cacheado(
+        forecast_res["df_forecasts"], df_clean,
+        tuple(sorted(supuestos_sel.items())), tuple(sorted(cap_nodo_sel.items())),
+    )
+    df_res = tabla_resumen(esc)
+
+    # --- Alertas de factibilidad (no mostrar óptimos falsos) ---
+    for n, e in esc.items():
+        if e["con_faltantes"]:
+            falt = e["mostrado"]["df_S"]["Faltante"].sum() if e["mostrado"]["optimo"] else float("nan")
+            st.error(f"**{n}:** el modelo NO es factible atendiendo el 100 % de la demanda. "
+                     f"Resuelto con faltantes penalizados: quedan **{falt:,.0f} uds** sin atender.")
+            for m in e["estricto"].get("diagnostico", []):
+                st.markdown(f"- {m}")
+
+    st.subheader("1. Comparación general")
+    fmt = {c: st.column_config.NumberColumn(format="%,.0f") for c in df_res.columns
+           if "COP" in c or "uds" in c}
+    fmt["Δ Z vs Base (%)"] = st.column_config.NumberColumn(format="%+.1f%%")
+    st.dataframe(df_res, hide_index=True, column_config=fmt)
+    st.plotly_chart(plot_costo_escenarios(df_res))
+
+    st.subheader("2. Producción y utilización de plantas")
+    df_pl = tabla_plantas(esc)
+    c1, c2 = st.columns(2)
+    c1.plotly_chart(plot_produccion_planta_esc(df_pl))
+    c2.plotly_chart(plot_utilizacion_esc(df_pl, "Planta", "Utilización de plantas por escenario"))
+
+    st.subheader("3. Utilización de nodos de trasbordo")
+    st.plotly_chart(plot_utilizacion_esc(tabla_nodos(esc), "Nodo", "Utilización de nodos por escenario"))
+
+    st.subheader("4. Distribución a clientes")
+    df_cl = tabla_clientes(esc)
+    st.plotly_chart(plot_clientes_esc(df_cl))
+    st.dataframe(df_cl, hide_index=True)
+
+    st.subheader("5. Restricciones activas (capacidad al 100 %)")
+    for n in ["Optimista", "Base", "Pesimista"]:
+        act = restricciones_activas(esc[n]["mostrado"])
+        st.markdown(f"**{n}:** " + ("; ".join(act) if act else "ninguna, hay holgura."))
+
+    st.subheader("6. Lectura de resultados")
+    st.info("Escriba aquí 3–4 conclusiones propias (qué escenario encarece más, qué planta/nodo se satura, "
+            "si aparecen faltantes y qué decisión recomendaría).")

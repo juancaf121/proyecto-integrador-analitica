@@ -1,0 +1,435 @@
+{
+  "filas_crudas": 1800,
+  "filas_vacias": 3,
+  "duplicados_exactos": 17,
+  "nulos_iniciales": {
+    "Fecha": 8,
+    "Producto": 8,
+    "Cliente": 11,
+    "Demanda": 21,
+    "Planta": 39,
+    "Precio": 38
+  },
+  "nulos_finales": {
+    "Fecha": 0,
+    "Producto": 0,
+    "Cliente": 0,
+    "Demanda": 0,
+    "Planta": 0,
+    "Precio": 0
+  },
+  "formatos_fecha_unicos": 209,
+  "variantes_producto": 66,
+  "variantes_cliente": 35,
+  "variantes_planta": 29,
+  "fechas_imposibles_corregidas": 4,
+  "fechas_imposibles_detalle": [
+    {
+      "Fila_Original": 27,
+      "Fecha_Original": "30/02/2025",
+      "Fecha_Corregida": "2025-02-01"
+    },
+    {
+      "Fila_Original": 806,
+      "Fecha_Original": "30/02/2026",
+      "Fecha_Corregida": "2026-02-01"
+    },
+    {
+      "Fila_Original": 1485,
+      "Fecha_Original": "30/02/2025",
+      "Fecha_Corregida": "2025-02-01"
+    },
+    {
+      "Fila_Original": 1542,
+      "Fecha_Original": "30/02/2026",
+      "Fecha_Corregida": "2026-02-01"
+    }
+  ],
+  "demanda_neg_cero_corregidos": 13,
+  "demanda_neg_cero_detalle": [
+    {
+      "Fila_Original": 204,
+      "Fecha": "2025-11-01",
+      "Producto": "P7",
+      "Cliente": "Cliente 1",
+      "Valor_Crudo": "-235",
+      "Valor_Numerico": -235.0,
+      "Tipo": "Negativo"
+    },
+    {
+      "Fila_Original": 354,
+      "Fecha": "2026-07-01",
+      "Producto": "P9",
+      "Cliente": "Cliente 3",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 404,
+      "Fecha": "2025-11-01",
+      "Producto": "P9",
+      "Cliente": "Cliente 5",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 417,
+      "Fecha": "2026-06-01",
+      "Producto": "P6",
+      "Cliente": "Cliente 3",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 606,
+      "Fecha": "2026-08-01",
+      "Producto": "P4",
+      "Cliente": "Cliente 4",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 854,
+      "Fecha": "2024-05-01",
+      "Producto": "P2",
+      "Cliente": "Cliente 2",
+      "Valor_Crudo": "-183",
+      "Valor_Numerico": -183.0,
+      "Tipo": "Negativo"
+    },
+    {
+      "Fila_Original": 927,
+      "Fecha": "2024-04-01",
+      "Producto": "P6",
+      "Cliente": "Cliente 1",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 965,
+      "Fecha": "2025-07-01",
+      "Producto": "P5",
+      "Cliente": "Cliente 1",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 1234,
+      "Fecha": "2026-03-01",
+      "Producto": "P3",
+      "Cliente": "Cliente 2",
+      "Valor_Crudo": "-175",
+      "Valor_Numerico": -175.0,
+      "Tipo": "Negativo"
+    },
+    {
+      "Fila_Original": 1297,
+      "Fecha": "2026-06-01",
+      "Producto": "P6",
+      "Cliente": "Cliente 3",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 1308,
+      "Fecha": "2026-03-01",
+      "Producto": "P1",
+      "Cliente": "Cliente 3",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    },
+    {
+      "Fila_Original": 1637,
+      "Fecha": "2026-07-01",
+      "Producto": "P2",
+      "Cliente": "Cliente 5",
+      "Valor_Crudo": "-129",
+      "Valor_Numerico": -129.0,
+      "Tipo": "Negativo"
+    },
+    {
+      "Fila_Original": 1777,
+      "Fecha": "2025-04-01",
+      "Producto": "P3",
+      "Cliente": "Cliente 4",
+      "Valor_Crudo": "0",
+      "Valor_Numerico": 0.0,
+      "Tipo": "Cero"
+    }
+  ],
+  "precios_atipicos_corregidos": 6,
+  "precios_atipicos_detalle": [
+    {
+      "Fila_Original": 618,
+      "Fecha": "2023-11-01",
+      "Producto": "P8",
+      "Cliente": "Cliente 4",
+      "Precio_Crudo": "160600",
+      "Precio_Numerico": 160600.0,
+      "Motivo": "Precio > 100.000 (error digitación)"
+    },
+    {
+      "Fila_Original": 707,
+      "Fecha": "2026-01-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 3",
+      "Precio_Crudo": "0",
+      "Precio_Numerico": 0.0,
+      "Motivo": "Precio <= 0"
+    },
+    {
+      "Fila_Original": 1055,
+      "Fecha": "2023-11-01",
+      "Producto": "P1",
+      "Cliente": "Cliente 2",
+      "Precio_Crudo": "0",
+      "Precio_Numerico": 0.0,
+      "Motivo": "Precio <= 0"
+    },
+    {
+      "Fila_Original": 1628,
+      "Fecha": "2024-07-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 4",
+      "Precio_Crudo": "312400",
+      "Precio_Numerico": 312400.0,
+      "Motivo": "Precio > 100.000 (error digitación)"
+    },
+    {
+      "Fila_Original": 1683,
+      "Fecha": "2025-03-01",
+      "Producto": "P9",
+      "Cliente": "Cliente 1",
+      "Precio_Crudo": "410000",
+      "Precio_Numerico": 410000.0,
+      "Motivo": "Precio > 100.000 (error digitación)"
+    },
+    {
+      "Fila_Original": 1701,
+      "Fecha": "2024-08-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 2",
+      "Precio_Crudo": "0",
+      "Precio_Numerico": 0.0,
+      "Motivo": "Precio <= 0"
+    }
+  ],
+  "productos_recuperados": 5,
+  "productos_recuperados_detalle": [
+    {
+      "Fila_Original": 430,
+      "Fecha": "2025-05-01",
+      "Cliente": "Cliente 3",
+      "Planta": "Medellín",
+      "Precio": 32740.0,
+      "Producto_Inferido": "P10",
+      "Mediana_Referencia": 32385.0
+    },
+    {
+      "Fila_Original": 447,
+      "Fecha": "2026-02-01",
+      "Cliente": "Cliente 1",
+      "Planta": "Bogotá",
+      "Precio": 50720.0,
+      "Producto_Inferido": "P5",
+      "Mediana_Referencia": 48190.0
+    },
+    {
+      "Fila_Original": 591,
+      "Fecha": "2024-11-01",
+      "Cliente": "Cliente 5",
+      "Planta": "Medellín",
+      "Precio": 31210.0,
+      "Producto_Inferido": "P10",
+      "Mediana_Referencia": 32385.0
+    },
+    {
+      "Fila_Original": 638,
+      "Fecha": "2026-02-01",
+      "Cliente": "Cliente 4",
+      "Planta": "Bogotá",
+      "Precio": 48910.0,
+      "Producto_Inferido": "P5",
+      "Mediana_Referencia": 48190.0
+    },
+    {
+      "Fila_Original": 1445,
+      "Fecha": "2023-12-01",
+      "Cliente": "Cliente 5",
+      "Planta": "Bogotá",
+      "Precio": 18130.0,
+      "Producto_Inferido": "P1",
+      "Mediana_Referencia": 19320.0
+    }
+  ],
+  "filas_con_llaves_validas": 1784,
+  "filas_descartadas_llave_nula": 16,
+  "colisiones_llaves_duplicadas": 36,
+  "combinaciones_unicas_validas": 1748,
+  "celdas_reconstruidas_panel": 52,
+  "outliers_detectados": 12,
+  "outliers_detalle": [
+    {
+      "Fecha": "2024-03-01",
+      "Producto": "P2",
+      "Cliente": "Cliente 3",
+      "Q1": 129.25,
+      "Q3": 158.25,
+      "IQR": 29.0,
+      "Limite_Inferior": 42.25,
+      "Limite_Superior": 245.25,
+      "Valor_Original": 129000,
+      "Valor_Imputado": 128
+    },
+    {
+      "Fecha": "2024-12-01",
+      "Producto": "P2",
+      "Cliente": "Cliente 3",
+      "Q1": 129.25,
+      "Q3": 158.25,
+      "IQR": 29.0,
+      "Limite_Inferior": 42.25,
+      "Limite_Superior": 245.25,
+      "Valor_Original": 14,
+      "Valor_Imputado": 136
+    },
+    {
+      "Fecha": "2024-04-01",
+      "Producto": "P2",
+      "Cliente": "Cliente 4",
+      "Q1": 184.0,
+      "Q3": 219.0,
+      "IQR": 35.0,
+      "Limite_Inferior": 79.0,
+      "Limite_Superior": 324.0,
+      "Valor_Original": 564,
+      "Valor_Imputado": 192
+    },
+    {
+      "Fecha": "2024-04-01",
+      "Producto": "P3",
+      "Cliente": "Cliente 4",
+      "Q1": 69.5,
+      "Q3": 91.75,
+      "IQR": 22.25,
+      "Limite_Inferior": 2.75,
+      "Limite_Superior": 158.5,
+      "Valor_Original": 485,
+      "Valor_Imputado": 93
+    },
+    {
+      "Fecha": "2024-07-01",
+      "Producto": "P4",
+      "Cliente": "Cliente 2",
+      "Q1": 196.25,
+      "Q3": 249.25,
+      "IQR": 53.0,
+      "Limite_Inferior": 37.25,
+      "Limite_Superior": 408.25,
+      "Valor_Original": 18,
+      "Valor_Imputado": 201
+    },
+    {
+      "Fecha": "2024-01-01",
+      "Producto": "P6",
+      "Cliente": "Cliente 3",
+      "Q1": 178.0,
+      "Q3": 268.0,
+      "IQR": 90.0,
+      "Limite_Inferior": 0.0,
+      "Limite_Superior": 538.0,
+      "Valor_Original": 1575,
+      "Valor_Imputado": 269
+    },
+    {
+      "Fecha": "2025-06-01",
+      "Producto": "P6",
+      "Cliente": "Cliente 3",
+      "Q1": 178.0,
+      "Q3": 268.0,
+      "IQR": 90.0,
+      "Limite_Inferior": 0.0,
+      "Limite_Superior": 538.0,
+      "Valor_Original": 785,
+      "Valor_Imputado": 164
+    },
+    {
+      "Fecha": "2024-11-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 1",
+      "Q1": 242.5,
+      "Q3": 341.0,
+      "IQR": 98.5,
+      "Limite_Inferior": 0.0,
+      "Limite_Superior": 636.5,
+      "Valor_Original": 1830,
+      "Valor_Imputado": 332
+    },
+    {
+      "Fecha": "2026-10-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 1",
+      "Q1": 242.5,
+      "Q3": 341.0,
+      "IQR": 98.5,
+      "Limite_Inferior": 0.0,
+      "Limite_Superior": 636.5,
+      "Valor_Original": 1544,
+      "Valor_Imputado": 356
+    },
+    {
+      "Fecha": "2025-09-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 2",
+      "Q1": 190.0,
+      "Q3": 264.0,
+      "IQR": 74.0,
+      "Limite_Inferior": 0.0,
+      "Limite_Superior": 486.0,
+      "Valor_Original": 1716,
+      "Valor_Imputado": 292
+    },
+    {
+      "Fecha": "2024-04-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 3",
+      "Q1": 183.0,
+      "Q3": 259.0,
+      "IQR": 76.0,
+      "Limite_Inferior": 0.0,
+      "Limite_Superior": 487.0,
+      "Valor_Original": 652,
+      "Valor_Imputado": 183
+    },
+    {
+      "Fecha": "2025-09-01",
+      "Producto": "P10",
+      "Cliente": "Cliente 4",
+      "Q1": 110.0,
+      "Q3": 162.0,
+      "IQR": 52.0,
+      "Limite_Inferior": 0.0,
+      "Limite_Superior": 318.0,
+      "Valor_Original": 168000,
+      "Valor_Imputado": 82
+    }
+  ],
+  "total_celdas_demanda_imputadas": 114,
+  "registros_limpios_finales": 1800,
+  "horizonte_inicio": "2023-11-01",
+  "horizonte_fin": "2026-10-01",
+  "meses_continuos": 36,
+  "productos_unicos": 10,
+  "clientes_unicos": 5,
+  "plantas_unicas": 4,
+  "series_unicas": 50,
+  "demanda_total_limpia": 335858
+}
